@@ -2625,6 +2625,56 @@ impl PartialPaths {
         }
     }
 
+    /// Returns the number of cells in the three arenas of this collection.  Each cell holds one
+    /// element of a stack or of a path.  The number grows with every path operation, and does not
+    /// shrink, except through [`with_scope`][PartialPaths::with_scope].
+    pub fn allocated_cells(&self) -> usize {
+        self.partial_symbol_stacks.len()
+            + self.partial_scope_stacks.len()
+            + self.partial_path_edges.len()
+    }
+
+    /// Runs `f` in a scope that releases all of its allocations.  When `f` returns, or panics,
+    /// this method drops every cell that `f` added to the collection.
+    ///
+    /// Use a scope to resolve one reference with a bounded memory cost.  Path operations only
+    /// add cells to the collection, and they never remove cells.  Without a scope, a long
+    /// resolution keeps its memory until the whole collection drops.
+    ///
+    /// Elements that existed before the scope stay valid.  This includes the partial paths of a
+    /// [`Database`][crate::stitching::Database].  The scope can change the cached state of older
+    /// elements.  It restores this state at the end.
+    ///
+    /// The scope drops every handle that `f` created.  A [`PartialPath`], a stack, or any other
+    /// value that `f` created holds such handles.  Do not return these values from `f`, do not
+    /// store them outside of `f`, and do not add them to a `Database`.  Copy the plain data that
+    /// you need, for example the end node of a path, out of the scope.
+    ///
+    /// Scopes cannot nest.  A nested call panics.
+    pub fn with_scope<R>(&mut self, f: impl FnOnce(&mut PartialPaths) -> R) -> R {
+        struct Scope<'a>(&'a mut PartialPaths);
+        impl Drop for Scope<'_> {
+            fn drop(&mut self) {
+                let this = &mut *self.0;
+                this.partial_symbol_stacks
+                    .rollback(|cell| cell.forget_reversal());
+                this.partial_scope_stacks
+                    .rollback(|cell| cell.forget_reversal());
+                this.partial_path_edges
+                    .rollback(|cell| cell.forget_reversal());
+            }
+        }
+        assert!(
+            !self.partial_symbol_stacks.has_checkpoint(),
+            "PartialPaths scopes cannot nest"
+        );
+        self.partial_symbol_stacks.checkpoint();
+        self.partial_scope_stacks.checkpoint();
+        self.partial_path_edges.checkpoint();
+        let scope = Scope(self);
+        f(&mut *scope.0)
+    }
+
     #[cfg_attr(not(feature = "storage"), allow(dead_code))]
     pub(crate) fn clear(&mut self) {
         self.partial_symbol_stacks.clear();

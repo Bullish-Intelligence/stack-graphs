@@ -162,6 +162,12 @@ unsafe impl<T> Sync for Handle<T> {}
 /// when the arena itself is dropped.
 pub struct Arena<T> {
     items: Vec<MaybeUninit<T>>,
+    /// While a checkpoint is active: the number of items when it started.  Zero means that no
+    /// checkpoint is active.  The first item is a placeholder, so a real mark is never zero.
+    checkpoint_mark: usize,
+    /// While a checkpoint is active: the handles below the mark whose content the owner changed
+    /// through interior mutability.
+    checkpoint_journal: Vec<u32>,
 }
 
 impl<T> Drop for Arena<T> {
@@ -178,7 +184,68 @@ impl<T> Arena<T> {
     pub fn new() -> Arena<T> {
         Arena {
             items: vec![MaybeUninit::uninit()],
+            checkpoint_mark: 0,
+            checkpoint_journal: Vec::new(),
         }
+    }
+
+    /// Starts a checkpoint.  A later call to [`rollback`][Arena::rollback] drops every item added
+    /// after this call.  The arena allows only one active checkpoint.
+    ///
+    /// Interior mutability breaks this guarantee for older items.  An owner that changes an older
+    /// item through a shared reference must call [`record_mutation`][Arena::record_mutation]
+    /// for it, and must restore the item in the `undo` closure of `rollback`.
+    pub(crate) fn checkpoint(&mut self) {
+        assert!(
+            self.checkpoint_mark == 0,
+            "an arena checkpoint is already active"
+        );
+        self.checkpoint_mark = self.items.len();
+        self.checkpoint_journal.clear();
+    }
+
+    /// Notes that the content of an item changed.  This does nothing unless a checkpoint is
+    /// active and the item is older than the checkpoint.
+    #[inline(always)]
+    pub(crate) fn record_mutation(&mut self, handle: Handle<T>) {
+        if self.checkpoint_mark != 0 && handle.as_usize() < self.checkpoint_mark {
+            self.checkpoint_journal.push(handle.as_u32());
+        }
+    }
+
+    /// Ends the active checkpoint.  Drops the items added since the checkpoint, and calls `undo`
+    /// for each older item that the owner reported as changed.  Handles to dropped items are
+    /// invalid after this call.  Returns the number of dropped items.
+    pub(crate) fn rollback<F>(&mut self, mut undo: F) -> usize
+    where
+        F: FnMut(&T),
+    {
+        let mark = self.checkpoint_mark;
+        assert!(mark != 0, "no arena checkpoint is active");
+        self.checkpoint_mark = 0;
+        for index in self.checkpoint_journal.drain(..) {
+            undo(unsafe { &*self.items[index as usize].as_ptr() });
+        }
+        let dropped = self.items.len() - mark;
+        if dropped > 0 {
+            unsafe {
+                let tail =
+                    std::mem::transmute::<_, &mut [T]>(&mut self.items[mark..]) as *mut [T];
+                self.items.set_len(mark);
+                tail.drop_in_place();
+            }
+        }
+        // Return the memory of a large scope to the system.
+        if self.items.capacity() > 2 * mark.max(1024) {
+            self.items.shrink_to(mark.max(1024));
+        }
+        self.checkpoint_journal.shrink_to(1024);
+        dropped
+    }
+
+    /// Returns whether a checkpoint is active.
+    pub(crate) fn has_checkpoint(&self) -> bool {
+        self.checkpoint_mark != 0
     }
 
     /// Clear the arena, keeping underlying allocated capacity.  After this, all previous handles into
@@ -186,6 +253,8 @@ impl<T> Arena<T> {
     #[inline(always)]
     pub fn clear(&mut self) {
         self.items.truncate(1);
+        self.checkpoint_mark = 0;
+        self.checkpoint_journal.clear();
     }
 
     /// Adds a new instance to this arena, returning a stable handle to it.
@@ -720,6 +789,7 @@ where
         // If not, reverse the list and cache the result.
         let new_reversed = ReversibleListCell::reverse(self.cells, arena);
         arena.get(self.cells).reversed.set(Some(new_reversed));
+        arena.record_mutation(self.cells);
     }
 }
 
@@ -737,6 +807,12 @@ impl<T> ReversibleList<T> {
 }
 
 impl<T> ReversibleListCell<T> {
+    /// Forgets the cached reversal of this cell.  A rolled back checkpoint uses this to undo
+    /// [`ReversibleList::ensure_reversal_available`].
+    pub(crate) fn forget_reversal(&self) {
+        self.reversed.set(None);
+    }
+
     fn new(
         head: T,
         tail: Handle<ReversibleListCell<T>>,
