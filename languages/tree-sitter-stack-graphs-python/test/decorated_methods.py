@@ -25,3 +25,51 @@ class A:
         return self.q, self.p
 #                   ^ defined: 24
 #                           ^ defined: 5
+
+# A read of a property behaves like a call of the method. The result gives the type of the read.
+class Leaf:
+    def go(self):
+        pass
+
+class Holder:
+    def __init__(self):
+        self.made = Leaf()
+
+    @property
+    def annotated(self) -> Leaf:
+        pass
+
+    @property
+    def returned(self):
+        return self.made
+
+    @functools.cached_property
+    def cached(self) -> Leaf:
+        pass
+
+    @property
+    @abstractmethod
+    def stacked(self) -> Leaf:
+        pass
+
+    @property
+    def plain(self):
+        return 1
+
+    def use(self):
+        self.annotated.go
+        #              ^ defined: 31
+        self.returned.go
+        #             ^ defined: 31
+        self.cached.go
+        #           ^ defined: 31
+        self.stacked.go
+        #            ^ defined: 31
+        self.plain
+        #    ^ defined: 56
+
+def read(holder: Holder):
+    holder.annotated.go
+    #                ^ defined: 31
+    Holder().returned.go
+    #                 ^ defined: 31

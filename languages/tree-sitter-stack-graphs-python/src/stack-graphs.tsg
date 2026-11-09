@@ -946,6 +946,33 @@ inherit .parent_module
   attr (@first_param.output) push_node = @first_param
 }
 
+;; A property. A read of `obj.prop` behaves like a call of the method `prop`, so the result of the
+;; method, or its return annotation, gives the type of the read. The read pushes the "()" symbol
+;; and the call pops it. Only a read that looks up a member of the result takes this path, so the
+;; read of the property alone still resolves to the method only. The decorator is `property`, `cached_property`, or a dotted name that ends
+;; in one of these. Any decorator of the method can name the property.
+[
+  (decorated_definition
+    (decorator [
+      (identifier) @_decorator
+      (attribute attribute: (identifier) @_decorator)
+    ])
+    definition: (function_definition name: (identifier) @name) @func
+    (#match? @_decorator "^(property|cached_property|abstractproperty)$"))
+]
+{
+  node property_pop_dot
+  node property_push_dot
+  node property_call
+  attr (property_pop_dot) pop_symbol = "."
+  attr (property_push_dot) push_symbol = "."
+  attr (property_call) push_scoped_symbol = "()", scope = @func.literal_scope
+  edge @name.def -> property_pop_dot
+  edge property_pop_dot -> property_push_dot
+  edge property_push_dot -> property_call
+  edge property_call -> @func.call
+}
+
 ;; A decorated method. The decorators `property`, `abstractmethod`, and custom decorators leave
 ;; the method as it is, so the first parameter is `self`. A classmethod has the class as its first
 ;; parameter. A staticmethod has no `self`. The rules read the last decorator only.
