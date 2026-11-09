@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The body of a top-level function sees the final bindings of the module with a higher precedence than the bindings before the function. A module-level definition after the function now shadows a builtin of the same name, and a rebinding after the function shadows the earlier binding.
 
+- A parameter `*args: T` behaves like a tuple, and `**kwargs: T` behaves like a dict. The annotation `T` describes the elements, so the rules do not follow it.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12

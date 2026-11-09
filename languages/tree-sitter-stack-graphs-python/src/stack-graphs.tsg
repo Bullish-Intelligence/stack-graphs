@@ -1852,6 +1852,33 @@ inherit .parent_module
   edge instance -> @type.annot
 }
 
+;;;; Annotated splat parameters
+;;
+;; The annotation of `*args: T` describes each element, so `args` is a tuple. The annotation of
+;; `**kwargs: T` describes each value, so `kwargs` is a dict. The rules follow neither element type.
+
+(parameter/typed_parameter . (list_splat_pattern (identifier) @name))
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @name.literal_scope
+  attr (class) push_symbol = "tuple"
+  edge @name.def -> instance
+  edge instance -> class
+  edge class -> @name.global_dot
+}
+
+(parameter/typed_parameter . (dictionary_splat_pattern (identifier) @name))
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @name.literal_scope
+  attr (class) push_symbol = "dict"
+  edge @name.def -> instance
+  edge instance -> class
+  edge class -> @name.global_dot
+}
+
 ;;;; Return annotations
 ;;
 ;; `def make() -> Foo` makes a call of `make` behave like an instance of Foo.

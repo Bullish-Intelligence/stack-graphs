@@ -601,3 +601,25 @@ fn nested_function_keeps_the_binding_of_the_enclosing_function() {
     let targets = resolve(source, "y");
     assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
 }
+
+#[test]
+fn annotated_star_args_is_a_tuple() {
+    let source = "def f(*args: int):\n    args.count\n";
+    assert_member(source, "count", "tuple", &method("count"));
+    // The annotation does not apply to the tuple.
+    assert!(resolve_lines("def f(*args: int):\n    args.bit_length\n", "bit_length").is_empty());
+}
+
+#[test]
+fn annotated_star_star_kwargs_is_a_dict() {
+    let source = "def f(**kwargs: str):\n    kwargs.items\n";
+    assert_member(source, "items", "dict", &method("items"));
+    assert!(resolve_lines("def f(**kwargs: str):\n    kwargs.upper\n", "upper").is_empty());
+}
+
+#[test]
+fn annotated_star_args_resolves_to_the_parameter_only() {
+    let source = "def f(*args: int, **kwargs: int):\n    return args, kwargs\n";
+    assert_eq!(resolve(source, "args"), vec![Target::Local(0)]);
+    assert_eq!(resolve(source, "kwargs"), vec![Target::Local(0)]);
+}
