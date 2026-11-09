@@ -6,6 +6,7 @@
 // ------------------------------------------------------------------------------------------------
 
 use itertools::Itertools;
+use stack_graphs::graph::Degree;
 use stack_graphs::graph::StackGraph;
 use stack_graphs::partial::PartialPaths;
 use stack_graphs::stitching::Database;
@@ -101,4 +102,24 @@ fn find_candidates_for_shorter_symbol_stack_without_variable() {
     // <"foo"> ~ <"foo","bar">    | no
     let results = test_foo_bar_root_candidate_paths(&["foo"], false);
     assert_eq!(0, results);
+}
+
+#[test]
+fn incoming_path_degree_of_node_outside_database_is_zero() {
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("test").unwrap();
+    let mut partials = PartialPaths::new();
+
+    let r = StackGraph::root_node();
+    let foo = create_pop_symbol_node(&mut graph, file, "foo", true);
+    let path = create_partial_path_and_edges(&mut graph, &mut partials, &[r, foo]).unwrap();
+
+    let mut db = Database::new();
+    db.add_partial_path(&graph, &mut partials, path);
+
+    // This node exists in the graph, but no partial path in the database ends at it.
+    // It comes after the last end node of the database, so the lookup was out of bounds.
+    let bar = create_pop_symbol_node(&mut graph, file, "bar", true);
+    assert_eq!(Degree::One, db.get_incoming_path_degree(foo));
+    assert_eq!(Degree::Zero, db.get_incoming_path_degree(bar));
 }

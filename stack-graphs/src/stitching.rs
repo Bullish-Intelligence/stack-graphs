@@ -533,9 +533,13 @@ impl Database {
         }
     }
 
-    /// Returns the number of paths in this database that share the given end node.
+    /// Returns the number of paths in this database that share the given end node.  Nodes that
+    /// no partial path in this database ends at have degree [`Degree::Zero`][].
     pub fn get_incoming_path_degree(&self, end_node: Handle<Node>) -> Degree {
-        self.incoming_paths[end_node]
+        // Only `add_partial_path` grows `incoming_paths`.  It has the size of the largest end node
+        // of any partial path in the database, not the size of the graph.  Callers can ask for any
+        // graph node, so the index can be out of bounds.
+        self.incoming_paths.get(end_node).copied().unwrap_or_default()
     }
 
     /// Determines which nodes in the stack graph are “local”, taking into account the partial
