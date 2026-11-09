@@ -1101,6 +1101,23 @@ where
         list.iter(arena)
     }
 
+    /// Returns an iterator over the contents of this deque in a backwards direction, if that needs
+    /// no new cells.  This holds if the deque stores its elements backwards, or if it has cached
+    /// the reversal.  Otherwise this method returns `None`.  Use it where one pass in a known
+    /// direction is enough, to avoid the copy that [`iter_reversed`][] makes.
+    ///
+    /// [`iter_reversed`]: #method.iter_reversed
+    pub fn iter_reversed_if_cached<'a>(
+        &self,
+        arena: &'a DequeArena<T>,
+    ) -> Option<impl Iterator<Item = &'a T> + 'a> {
+        let mut list = self.list;
+        if self.is_forwards() && list.reverse_reused(arena).is_err() {
+            return None;
+        }
+        Some(list.iter(arena))
+    }
+
     /// Ensures that both deques are stored in the same direction.  It doesn't matter _which_
     /// direction, as long as they're the same, so do the minimum amount of work to bring this
     /// about.  (In particular, if we've already calculated the reversal of one of the deques,

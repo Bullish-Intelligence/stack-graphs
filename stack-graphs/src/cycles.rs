@@ -50,7 +50,9 @@ use crate::stitching::ToAppendable;
 
 /// Helps detect similar paths in the path-finding algorithm.
 pub struct SimilarPathDetector<P> {
-    paths: HashMap<PathKey, SmallVec<[P; 4]>>,
+    /// The known paths per key.  The flag tells whether another path can shadow the path.  The
+    /// detector computes it when it needs it, and keeps it afterwards.
+    paths: HashMap<PathKey, SmallVec<[(P, Option<bool>); 4]>>,
     counts: Option<HashMap<PathKey, SmallVec<[usize; 4]>>>,
 }
 
@@ -112,7 +114,7 @@ where
     /// we return false. Otherwise, we return true.
     pub fn add_path<Cmp>(
         &mut self,
-        _graph: &StackGraph,
+        graph: &StackGraph,
         arena: &mut P::Arena,
         path: &P,
         cmp: Cmp,
@@ -120,7 +122,33 @@ where
     where
         Cmp: Fn(&mut P::Arena, &P, &P) -> Option<Ordering>,
     {
+        self.add_path_shadow_aware(graph, arena, path, |_, _| true, cmp)
+    }
+
+    /// Like [`add_path`][SimilarPathDetector::add_path], but the detector also keeps a path that
+    /// nothing can shadow.  The function `can_be_shadowed` tells whether another path can shadow
+    /// a path.  The detector calls it only for similar paths, and at most once for each path.
+    ///
+    /// Take two similar paths that no path shadows.  If another path can shadow the known path,
+    /// and none can shadow the new path, then the two paths can have different fates.  The path
+    /// that the other path shadows is useless, the other path is not.  So the detector keeps the
+    /// new path, too.  Once the detector knows a path that nothing can shadow, it ignores all later
+    /// similar paths.  Hence it keeps at most two paths per key: the first path, and the first
+    /// path that nothing can shadow.
+    pub fn add_path_shadow_aware<Cmp, Sh>(
+        &mut self,
+        _graph: &StackGraph,
+        arena: &mut P::Arena,
+        path: &P,
+        mut can_be_shadowed: Sh,
+        cmp: Cmp,
+    ) -> bool
+    where
+        Cmp: Fn(&mut P::Arena, &P, &P) -> Option<Ordering>,
+        Sh: FnMut(&mut P::Arena, &P) -> bool,
+    {
         let key = path.key();
+        let mut new_shadowable: Option<bool> = None;
 
         // Iterate through the bucket to determine if this paths is better than any already known
         // path. Note that the bucket might be modified during the loop if a path is removed which
@@ -133,7 +161,7 @@ where
         let mut idx = 0;
         let mut count = 0;
         while idx < possibly_similar_paths.len() {
-            let other_path = &mut possibly_similar_paths[idx];
+            let (other_path, other_shadowable) = &mut possibly_similar_paths[idx];
             match cmp(arena, path, other_path) {
                 Some(Ordering::Less) => {
                     // the new path is better, remove the old one
@@ -145,7 +173,21 @@ where
                     // keep `idx` which now points to the next element
                     continue;
                 }
-                Some(_) => {
+                Some(ordering) => {
+                    if ordering == Ordering::Equal {
+                        let other_shadowable = *other_shadowable
+                            .get_or_insert_with(|| can_be_shadowed(arena, other_path));
+                        if other_shadowable
+                            && !*new_shadowable
+                                .get_or_insert_with(|| can_be_shadowed(arena, path))
+                        {
+                            // Another path can shadow the known path, and nothing can shadow the
+                            // new path.  Keep the new path, unless a later known path makes it
+                            // redundant.
+                            idx += 1;
+                            continue;
+                        }
+                    }
                     // the new path is equal or worse, and ignored
                     if let Some(possible_similar_counts) = possible_similar_counts {
                         possible_similar_counts[idx] += 1;
@@ -159,7 +201,7 @@ where
         }
 
         // this path is either new or better, keep it
-        possibly_similar_paths.push(path.clone());
+        possibly_similar_paths.push((path.clone(), new_shadowable));
         if let Some(possible_similar_counts) = possible_similar_counts {
             possible_similar_counts.push(count);
         }

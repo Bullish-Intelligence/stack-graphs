@@ -1643,6 +1643,17 @@ impl PartialPathEdgeList {
         }
     }
 
+    /// Returns the edges of this list from the front to the back.  This does not copy the list in
+    /// the arena, if the list is stored backwards, or has cached its reversal.
+    pub fn to_vec(&self, partials: &mut PartialPaths) -> Vec<PartialPathEdge> {
+        if let Some(backwards) = self.edges.iter_reversed_if_cached(&partials.partial_path_edges) {
+            let mut edges = backwards.copied().collect::<Vec<_>>();
+            edges.reverse();
+            return edges;
+        }
+        self.iter(partials).collect()
+    }
+
     /// Returns an iterator over the contents of this edge list.
     pub fn iter<'a>(
         &self,
@@ -1767,6 +1778,115 @@ impl PartialPath {
     /// A shadows path B, the reverse is not true.
     pub fn shadows(&self, partials: &mut PartialPaths, other: &PartialPath) -> bool {
         self.edges.shadows(partials, other.edges)
+    }
+
+    /// Returns whether another path can shadow this path, or a path that extends it.  The answer
+    /// `true` is always correct, but the answer `false` means that the path has no sibling that
+    /// can win.
+    ///
+    /// A path is shadowed if another path from the same start leaves it at some node over an edge
+    /// of a higher precedence.  So the method looks at each node where the path leaves over an
+    /// edge, and asks if another edge of the node has a higher precedence and can continue
+    /// the path.  An edge to a pop node can continue the path only if its symbol is the symbol
+    /// on top of the symbol stack at that point.  The method follows the symbol stack along the
+    /// edges of the path, from the precondition of the path.  An edge to any other node can
+    /// continue the path.
+    pub fn can_be_shadowed(&self, graph: &StackGraph, partials: &mut PartialPaths) -> bool {
+        // The top of the stack is at the end of the vector.
+        let mut stack = self
+            .symbol_stack_precondition
+            .iter(partials)
+            .map(|symbol| symbol.symbol)
+            .collect::<Vec<_>>();
+        stack.reverse();
+        let below_is_unknown = self.symbol_stack_precondition.has_variable();
+        // The start node acts on the stack, too.
+        match &graph[self.start_node] {
+            Node::PushSymbol(push) => stack.push(push.symbol),
+            Node::PushScopedSymbol(push) => stack.push(push.symbol),
+            Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        let edges = self.edges.to_vec(partials);
+        for (index, edge) in edges.iter().enumerate() {
+            let source = match graph.node_for_id(edge.source_node_id) {
+                Some(source) => source,
+                None => return true,
+            };
+            let sink = match edges.get(index + 1) {
+                Some(next) => match graph.node_for_id(next.source_node_id) {
+                    Some(sink) => sink,
+                    None => return true,
+                },
+                None => self.end_node,
+            };
+            for other in graph.outgoing_edges(source) {
+                if other.precedence <= edge.precedence {
+                    continue;
+                }
+                if Self::can_reach_matching_pop(
+                    graph,
+                    other.sink,
+                    stack.last().copied(),
+                    below_is_unknown,
+                ) {
+                    return true;
+                }
+            }
+            match &graph[sink] {
+                Node::PushSymbol(push) => stack.push(push.symbol),
+                Node::PushScopedSymbol(push) => stack.push(push.symbol),
+                Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Returns whether a path that starts at `sink` can pop `top` from the symbol stack.  If `top`
+    /// is `None`, the stack is empty and has an unknown part below if `below_is_unknown`.  The
+    /// search follows the edges of scope nodes, and stops at the first pop node on each route.  It
+    /// gives up after a fixed number of nodes.  A push node, a root node, a jump node, and the
+    /// give up count as a possible match.
+    fn can_reach_matching_pop(
+        graph: &StackGraph,
+        sink: Handle<Node>,
+        top: Option<Handle<crate::graph::Symbol>>,
+        below_is_unknown: bool,
+    ) -> bool {
+        const BUDGET: usize = 64;
+        let mut seen = Vec::<Handle<Node>>::new();
+        let mut work = vec![sink];
+        while let Some(node) = work.pop() {
+            if seen.contains(&node) {
+                continue;
+            }
+            if seen.len() >= BUDGET {
+                return true;
+            }
+            seen.push(node);
+            match &graph[node] {
+                Node::PopSymbol(pop) => {
+                    if top.map_or(below_is_unknown, |top| top == pop.symbol) {
+                        return true;
+                    }
+                }
+                Node::PopScopedSymbol(pop) => {
+                    if top.map_or(below_is_unknown, |top| top == pop.symbol) {
+                        return true;
+                    }
+                }
+                Node::Scope(_) | Node::DropScopes(_) => {
+                    work.extend(graph.outgoing_edges(node).map(|edge| edge.sink));
+                }
+                _ => return true,
+            }
+        }
+        false
     }
 
     pub fn equals(&self, partials: &mut PartialPaths, other: &PartialPath) -> bool {

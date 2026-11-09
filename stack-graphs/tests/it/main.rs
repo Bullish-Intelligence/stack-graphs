@@ -23,6 +23,7 @@ mod cycles;
 mod graph;
 mod limits;
 mod partial;
+mod similar_paths;
 #[cfg(feature = "serde")]
 mod serde;
 mod stats;

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `StitcherConfig::with_shadow_aware_similar_paths` makes similar path detection keep the first path that nothing can shadow, besides the first path. Of two similar paths, the detector keeps the first one. That path can be one that another path shadows, while the second path is not. Then the detector loses a definition that the second path reaches. With this option, the detector keeps at most two similar paths for each start node, end node, and pair of stack lengths. `PartialPath::can_be_shadowed` decides if another path can shadow a path. The option is off by default.
 - `StitcherLimits` and `StitcherConfig::with_limits` bound the work, the queue length, the arena growth, and the path length of one stitcher run. All limits are off by default.
 - `Stats::bounded` reports the limit that stopped a run or cut paths, as `StitchBound`. `Stats` also records `work`, `peak_queue_len`, and `arena_cells_added`.
 - `PartialPaths::with_scope` drops all cells that a closure adds. `PartialPaths::allocated_cells` counts the cells.

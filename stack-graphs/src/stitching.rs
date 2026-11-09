@@ -887,6 +887,7 @@ pub struct ForwardPartialPathStitcher<H> {
     ),
     appended_paths: Appendables<H>,
     similar_path_detector: Option<SimilarPathDetector<PartialPath>>,
+    shadow_aware_similar_paths: bool,
     check_only_join_nodes: bool,
     max_work_per_phase: usize,
     limits: StitcherLimits,
@@ -936,6 +937,8 @@ impl<H> ForwardPartialPathStitcher<H> {
             appended_paths,
             // By default, all paths are checked for similarity
             similar_path_detector: Some(SimilarPathDetector::new()),
+            // By default, the detector keeps the first of two similar paths
+            shadow_aware_similar_paths: false,
             // By default, all nodes are checked for cycles and (if enabled) similarity
             check_only_join_nodes: false,
             // By default, there's no artificial bound on the amount of work done per phase
@@ -967,6 +970,17 @@ impl<H> ForwardPartialPathStitcher<H> {
             similar_path_detector.set_collect_stats(self.stats.is_some());
             self.similar_path_detector = Some(similar_path_detector);
         }
+    }
+
+    /// Sets whether similar path detection takes shadowing into account.  Of two similar paths, the
+    /// detector keeps the first.  The first path can be one that another path shadows, while the
+    /// second path is not.  Then the detector hides a definition that the second path reaches.
+    /// With this option, the detector keeps the first path that nothing can shadow, too.  At most
+    /// two similar paths per start node, end node, and pair of stack lengths stay.  See
+    /// [`PartialPath::can_be_shadowed`][].  The option has no effect if similar path detection is
+    /// off.
+    pub fn set_shadow_aware_similar_paths(&mut self, shadow_aware_similar_paths: bool) {
+        self.shadow_aware_similar_paths = shadow_aware_similar_paths;
     }
 
     /// Sets whether all nodes are checked for cycles and (if enabled) similar paths, or only nodes with multiple
@@ -1157,24 +1171,31 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
             let (graph, partials, _) = candidates.get_graph_partials_and_db();
             if check_similar_path {
                 if let Some(similar_path_detector) = &mut self.similar_path_detector {
-                    if similar_path_detector.add_path(
-                        graph,
-                        partials,
-                        &new_partial_path,
-                        |ps, left, right| {
-                            if !left.equals(ps, right) {
-                                None
+                    let cmp = |ps: &mut PartialPaths, left: &PartialPath, right: &PartialPath| {
+                        if !left.equals(ps, right) {
+                            None
+                        } else {
+                            if left.shadows(ps, right) {
+                                Some(Ordering::Less)
+                            } else if right.shadows(ps, left) {
+                                Some(Ordering::Greater)
                             } else {
-                                if left.shadows(ps, right) {
-                                    Some(Ordering::Less)
-                                } else if right.shadows(ps, left) {
-                                    Some(Ordering::Greater)
-                                } else {
-                                    Some(Ordering::Equal)
-                                }
+                                Some(Ordering::Equal)
                             }
-                        },
-                    ) {
+                        }
+                    };
+                    let rejected = if self.shadow_aware_similar_paths {
+                        similar_path_detector.add_path_shadow_aware(
+                            graph,
+                            partials,
+                            &new_partial_path,
+                            |ps, path| path.can_be_shadowed(graph, ps),
+                            cmp,
+                        )
+                    } else {
+                        similar_path_detector.add_path(graph, partials, &new_partial_path, cmp)
+                    };
+                    if rejected {
                         copious_debugging!(
                             " extension {}",
                             new_partial_path.display(graph, partials)
@@ -1628,6 +1649,8 @@ pub struct StitcherLimits {
 pub struct StitcherConfig {
     /// Enables similar path detection during path stitching.
     detect_similar_paths: bool,
+    /// Makes similar path detection keep a path that nothing can shadow.
+    shadow_aware_similar_paths: bool,
     /// Collect statistics about path stitching.
     collect_stats: bool,
     /// Limits on the cost of one run.
@@ -1641,6 +1664,17 @@ impl StitcherConfig {
 
     pub fn with_detect_similar_paths(mut self, detect_similar_paths: bool) -> Self {
         self.detect_similar_paths = detect_similar_paths;
+        self
+    }
+
+    pub fn shadow_aware_similar_paths(&self) -> bool {
+        self.shadow_aware_similar_paths
+    }
+
+    /// Sets whether similar path detection takes shadowing into account.  See
+    /// [`ForwardPartialPathStitcher::set_shadow_aware_similar_paths`][].  The default is `false`.
+    pub fn with_shadow_aware_similar_paths(mut self, shadow_aware_similar_paths: bool) -> Self {
+        self.shadow_aware_similar_paths = shadow_aware_similar_paths;
         self
     }
 
@@ -1691,6 +1725,7 @@ impl StitcherConfig {
 impl StitcherConfig {
     fn apply<H>(&self, stitcher: &mut ForwardPartialPathStitcher<H>) {
         stitcher.set_similar_path_detection(self.detect_similar_paths);
+        stitcher.set_shadow_aware_similar_paths(self.shadow_aware_similar_paths);
         stitcher.set_collect_stats(self.collect_stats);
         stitcher.set_limits(self.limits);
     }
@@ -1700,6 +1735,7 @@ impl Default for StitcherConfig {
     fn default() -> Self {
         Self {
             detect_similar_paths: true,
+            shadow_aware_similar_paths: false,
             collect_stats: false,
             limits: StitcherLimits::default(),
         }
