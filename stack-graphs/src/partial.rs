@@ -611,7 +611,13 @@ impl PartialSymbolStack {
 
         // Then prepend all of the scoped symbols that appear at the beginning of this stack,
         // applying the bindings to any attached scopes as well.
-        while let Some(partial_symbol) = self.pop_back(partials) {
+        //
+        // Walk the stack without a reversal.  `pop_back` on a stack that is stored forwards, as
+        // the symbol stack of a postcondition is, would copy the whole stack in the arena.
+        let symbols = self
+            .symbols
+            .to_smallvec::<8>(&partials.partial_symbol_stacks);
+        for partial_symbol in symbols.into_iter().rev() {
             let partial_symbol = partial_symbol.apply_partial_bindings(partials, scope_bindings)?;
             result.push_front(partials, partial_symbol);
         }
@@ -1012,7 +1018,10 @@ impl PartialScopeStack {
         };
 
         // Then prepend all of the scopes that appear at the beginning of this stack.
-        while let Some(scope) = self.pop_back(partials) {
+        //
+        // Walk the stack without a reversal, as `PartialSymbolStack::apply_partial_bindings` does.
+        let scopes = self.scopes.to_smallvec::<8>(&partials.partial_scope_stacks);
+        for scope in scopes.into_iter().rev() {
             result.push_front(partials, scope);
         }
         Ok(result)
@@ -1593,6 +1602,9 @@ impl PartialPathEdgeList {
     /// Returns whether one edge list shadows another.  Note that shadowing is not commutative — if
     /// path A shadows path B, the reverse is not true.
     pub fn shadows(mut self, partials: &mut PartialPaths, mut other: PartialPathEdgeList) -> bool {
+        if let Some(shadows) = self.shadows_without_reversal(partials, other) {
+            return shadows;
+        }
         while let Some(self_edge) = self.pop_front(partials) {
             if let Some(other_edge) = other.pop_front(partials) {
                 if self_edge.source_node_id != other_edge.source_node_id {
@@ -1605,6 +1617,47 @@ impl PartialPathEdgeList {
             }
         }
         false
+    }
+
+    /// Decides [`shadows`][PartialPathEdgeList::shadows] in one pass from the back to the front of
+    /// both lists.  This needs no new arena cells, if both lists are stored backwards, or have
+    /// cached their reversal.  A path stitcher extends a path at the back, so its edge lists have
+    /// this form.  A forward walk would copy the list first, which costs time and cells in
+    /// proportion to the length of the path.  Returns `None` if a list has no usable direction.
+    ///
+    /// The forward algorithm decides at the first position where both lists have an edge from
+    /// the same node and the edge of `self` has a higher precedence, or at the first position
+    /// where the nodes differ.  The backward pass overwrites its answer at each such position, so
+    /// that the position nearest to the front wins.
+    fn shadows_without_reversal(
+        self,
+        partials: &PartialPaths,
+        other: PartialPathEdgeList,
+    ) -> Option<bool> {
+        let mut self_edges = self
+            .edges
+            .iter_reversed_if_cached(&partials.partial_path_edges)?;
+        let mut other_edges = other
+            .edges
+            .iter_reversed_if_cached(&partials.partial_path_edges)?;
+        // Only the positions that both lists have can decide.  Skip the extra edges at the back
+        // of the longer list.
+        let common = std::cmp::min(self.len(), other.len());
+        for _ in common..self.len() {
+            self_edges.next();
+        }
+        for _ in common..other.len() {
+            other_edges.next();
+        }
+        let mut result = false;
+        while let (Some(self_edge), Some(other_edge)) = (self_edges.next(), other_edges.next()) {
+            if self_edge.source_node_id != other_edge.source_node_id {
+                result = false;
+            } else if self_edge.shadows(*other_edge) {
+                result = true;
+            }
+        }
+        Some(result)
     }
 
     pub fn equals(mut self, partials: &mut PartialPaths, mut other: PartialPathEdgeList) -> bool {

@@ -1101,6 +1101,24 @@ where
         list.iter(arena)
     }
 
+    /// Returns the elements of this deque from the front to the back.  Unlike [`iter`][], this does
+    /// not copy the list in the arena, whichever direction the deque stores its elements.
+    ///
+    /// [`iter`]: #method.iter
+    pub fn to_smallvec<'a, const N: usize>(
+        &self,
+        arena: &'a DequeArena<T>,
+    ) -> smallvec::SmallVec<[T; N]>
+    where
+        [T; N]: smallvec::Array<Item = T>,
+    {
+        let mut elements = self.list.iter(arena).cloned().collect::<smallvec::SmallVec<_>>();
+        if self.is_backwards() {
+            elements.reverse();
+        }
+        elements
+    }
+
     /// Returns an iterator over the contents of this deque in a backwards direction, if that needs
     /// no new cells.  This holds if the deque stores its elements backwards, or if it has cached
     /// the reversal.  Otherwise this method returns `None`.  Use it where one pass in a known

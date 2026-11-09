@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PartialPathEdgeList::shadows` and `PartialSymbolStack::apply_partial_bindings` no longer copy a list in the arena when the list is stored backwards, as a path that a stitcher extends is. Similar path detection costs less time and arena cells on long paths. The results do not change.
 - `Database::find_candidate_partial_paths` and `find_candidate_partial_paths_from_root` take `&self`. `DatabaseCandidates::new` takes `&Database`. Queries no longer change the database.
 
 ## v0.14.1 -- 2024-12-12

@@ -964,3 +964,141 @@ fn can_resolve_to_node() -> Result<(), PathResolutionError> {
 
     Ok(())
 }
+
+/// The reference definition of shadowing between two edge lists.  The first position where both
+/// lists have an edge decides: different nodes mean no shadowing, and a higher precedence of the
+/// same node means shadowing.
+fn expected_shadows(left: &[(u32, i32)], right: &[(u32, i32)]) -> bool {
+    for (l, r) in left.iter().zip(right.iter()) {
+        if l.0 != r.0 {
+            return false;
+        }
+        if l.1 > r.1 {
+            return true;
+        }
+    }
+    false
+}
+
+fn edge_list(
+    graph: &mut StackGraph,
+    partials: &mut PartialPaths,
+    edges: &[(u32, i32)],
+    forwards: bool,
+) -> PartialPathEdgeList {
+    let file = graph.get_or_create_file("edges");
+    let mut list = PartialPathEdgeList::empty();
+    let edge = |(id, precedence): (u32, i32)| stack_graphs::partial::PartialPathEdge {
+        source_node_id: NodeID::new_in_file(file, id),
+        precedence,
+    };
+    if forwards {
+        for e in edges.iter().rev() {
+            list.push_front(partials, edge(*e));
+        }
+    } else {
+        for e in edges {
+            list.push_back(partials, edge(*e));
+        }
+    }
+    list
+}
+
+/// Makes the lists of 0 to 6 edges, from three nodes and three precedences.
+fn all_edge_sequences() -> Vec<Vec<(u32, i32)>> {
+    let mut all = vec![vec![]];
+    let mut previous = vec![vec![]];
+    for _ in 0..4 {
+        let mut next = Vec::new();
+        for sequence in &previous {
+            for node in 1..=2u32 {
+                for precedence in 0..=2i32 {
+                    let mut longer = sequence.clone();
+                    longer.push((node, precedence));
+                    next.push(longer);
+                }
+            }
+        }
+        all.extend(next.iter().cloned());
+        previous = next;
+    }
+    all
+}
+
+#[test]
+fn edge_lists_shadow_as_the_reference_says_in_every_direction() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    let sequences = all_edge_sequences();
+    for left in sequences.iter().step_by(7) {
+        for right in sequences.iter().step_by(5) {
+            let expected = expected_shadows(left, right);
+            for (left_forwards, right_forwards) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let l = edge_list(&mut graph, &mut partials, left, left_forwards);
+                let r = edge_list(&mut graph, &mut partials, right, right_forwards);
+                assert_eq!(
+                    expected,
+                    l.shadows(&mut partials, r),
+                    "{:?} shadows {:?}, forwards: {} {}",
+                    left,
+                    right,
+                    left_forwards,
+                    right_forwards
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shadowing_of_edge_lists_that_the_stitcher_builds_needs_no_new_cells() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    let left = edge_list(&mut graph, &mut partials, &[(1, 0), (2, 0), (1, 1), (2, 2)], false);
+    let right = edge_list(&mut graph, &mut partials, &[(1, 0), (2, 0), (1, 0), (2, 0)], false);
+    let cells = partials.allocated_cells();
+    assert!(left.shadows(&mut partials, right));
+    assert!(!right.shadows(&mut partials, left));
+    assert_eq!(cells, partials.allocated_cells());
+}
+
+#[test]
+fn applying_bindings_to_a_stack_that_the_stitcher_builds_needs_no_reversal() {
+    use controlled_option::ControlledOption;
+    use stack_graphs::partial::PartialScopedSymbol;
+    use stack_graphs::partial::PartialSymbolStack;
+
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    // A path stitcher pushes the symbols of a postcondition onto the front.
+    let mut forwards = PartialSymbolStack::empty();
+    for name in ["c", "b", "a"] {
+        let symbol = graph.add_symbol(name);
+        let scoped = PartialScopedSymbol {
+            symbol,
+            scopes: ControlledOption::none(),
+        };
+        forwards.push_front(&mut partials, scoped);
+    }
+    let backwards = create_symbol_stack(
+        &mut graph,
+        &mut partials,
+        (&[("a", None), ("b", None), ("c", None)], None),
+    );
+    for stack in [forwards, backwards] {
+        let cells = partials.allocated_cells();
+        let result = stack
+            .apply_partial_bindings(
+                &mut partials,
+                &PartialSymbolStackBindings::new(),
+                &PartialScopeStackBindings::new(),
+            )
+            .unwrap();
+        // The result is a new stack of three cells.  A reversal of the argument would add three
+        // more.
+        assert_eq!(cells + 3, partials.allocated_cells());
+        assert!(result.equals(&mut partials, stack));
+    }
+}
