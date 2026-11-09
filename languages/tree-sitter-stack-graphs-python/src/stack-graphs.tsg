@@ -1020,8 +1020,8 @@ inherit .parent_module
 (await) {}
 
 (binary_operator
-  (_) @left
-  (_) @right) @binop
+  left: (_) @left
+  right: (_) @right) @binop
 {
   edge @binop.new_bindings -> @left.new_bindings
   edge @binop.new_bindings -> @right.new_bindings
