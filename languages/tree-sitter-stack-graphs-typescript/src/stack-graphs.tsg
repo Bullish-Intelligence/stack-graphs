@@ -4277,16 +4277,16 @@ if none @is_async {
 (array_pattern
   (_)@pat
 )@array_pat {
-  node @pat.comp_index
+  node @pat.arr_comp_index
 
   ; propagate lexical scope
   edge @pat.lexical_scope -> @array_pat.lexical_scope
 
   ; propagate cotype components
-  edge @pat.cotype -> @pat.comp_index
+  edge @pat.cotype -> @pat.arr_comp_index
   ;
-  attr (@pat.comp_index) push_symbol = (named-child-index @pat)
-  edge @pat.comp_index -> @array_pat.indexable
+  attr (@pat.arr_comp_index) push_symbol = (named-child-index @pat)
+  edge @pat.arr_comp_index -> @array_pat.indexable
 
   ; propagate defs
   edge @array_pat.defs -> @pat.defs ;; FIXME
