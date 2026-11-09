@@ -623,3 +623,26 @@ fn annotated_star_args_resolves_to_the_parameter_only() {
     assert_eq!(resolve(source, "args"), vec![Target::Local(0)]);
     assert_eq!(resolve(source, "kwargs"), vec![Target::Local(0)]);
 }
+
+#[test]
+fn property_method_gets_the_class_scope() {
+    let source = "class A:\n    @property\n    def p(self):\n        return self.args\n";
+    // `A` has no base class, so `args` does not resolve.
+    assert!(resolve_lines(source, "args").is_empty());
+    let source = "class A(Exception):\n    @property\n    def p(self):\n        return self.args\n";
+    assert_builtin(source, "args", "args = None");
+}
+
+#[test]
+fn classmethod_parameter_behaves_like_the_class() {
+    let source = "class A(Exception):\n    @classmethod\n    def make(cls):\n        return cls().args\n";
+    assert_builtin(source, "args", "args = None");
+    let source = "class A(Exception):\n    @classmethod\n    def make(cls):\n        return cls.with_traceback\n";
+    assert_member(source, "with_traceback", "BaseException", &method("with_traceback"));
+}
+
+#[test]
+fn staticmethod_parameter_has_no_class_scope() {
+    let source = "class A(Exception):\n    @staticmethod\n    def make(x):\n        return x.args\n";
+    assert!(resolve_lines(source, "args").is_empty());
+}

@@ -893,6 +893,36 @@ inherit .parent_module
   attr (@first_param.output) push_node = @first_param
 }
 
+;; A decorated method. The decorators `property`, `abstractmethod`, and custom decorators leave
+;; the method as it is, so the first parameter is `self`. A classmethod has the class as its first
+;; parameter. A staticmethod has no `self`. The rules read the last decorator only.
+(class_definition
+    body: (block
+            (decorated_definition
+                (decorator (_) @decorator) .
+                definition: (function_definition
+                    parameters:
+                        (parameters . (identifier) @first_param)
+                    body: (block) @method_body
+                )
+            )
+         )
+) @class
+{
+  if (not (eq (source-text @decorator) "staticmethod")) {
+    edge @first_param.class_member_attr_scope -> @first_param.output
+    edge @first_param.output -> @method_body.after_scope
+    attr (@first_param.output) push_node = @first_param
+  }
+  if (not (or (eq (source-text @decorator) "staticmethod") (eq (source-text @decorator) "classmethod"))) {
+    edge @first_param.def -> @first_param.class_self_scope
+  }
+  if (eq (source-text @decorator) "classmethod") {
+    edge @first_param.def -> @class.cls_call
+    edge @first_param.def -> @class.cls_members_dot
+  }
+}
+
 [
   (parameters        (_) @param) @params
   (lambda_parameters (_) @param) @params
@@ -995,6 +1025,11 @@ inherit .parent_module
   attr (self_dot) pop_symbol = "."
   attr (@class.member_attrs) push_symbol = "."
   attr (self_scope) is_exported
+
+  ; A classmethod makes its first parameter behave like the class. It reaches the same nodes as
+  ; the name of the class does.
+  let @class.cls_call = call
+  let @class.cls_members_dot = members_dot
 
   ; Members of the class chain to the members of its base classes.
   ; The members node has popped the "." of the lookup. The base class pops it again, so push it

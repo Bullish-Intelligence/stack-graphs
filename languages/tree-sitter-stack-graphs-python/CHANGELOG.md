@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A `yield` expression no longer makes the build fail. Before, a statement like `x = yield value` stopped the build of the file.
 
+- A decorated method gets the class scope, as a plain method does. `self` in a method with `@property` or a custom decorator reaches the members of the class. In a `@classmethod`, the first parameter behaves like the class. A `@staticmethod` has no `self`. The rules read the last decorator of the method only.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12
