@@ -876,6 +876,37 @@ inherit .parent_module
   let @body.class_member_attr_scope = #null
 }
 
+;;;; Keyword arguments
+;;
+;; The name in `f(name=value)` is a reference to the parameter `name` of the function that the
+;; call reaches. The reference pushes the symbol `name` and the marker symbol "<kw>", then it
+;; resolves the called expression. A function pops the marker and looks the name up among its
+;; parameters. A class looks `__init__` up in its members, and that function pops the marker.
+
+(function_definition
+  name: (identifier) @name
+  parameters: (_) @params)
+{
+  node keyword_pop
+  attr (keyword_pop) pop_symbol = "<kw>"
+  edge @name.def -> keyword_pop
+  edge keyword_pop -> @params.after_scope
+}
+
+(call
+  function: (_) @fn
+  arguments: (argument_list
+    (keyword_argument
+      name: (identifier) @name)))
+{
+  node reference
+  node marker
+  attr (reference) node_reference = @name
+  attr (marker) push_symbol = "<kw>"
+  edge reference -> marker
+  edge marker -> @fn.output
+}
+
 ; method definition
 (class_definition
     body: (block
@@ -1030,6 +1061,23 @@ inherit .parent_module
   ; the name of the class does.
   let @class.cls_call = call
   let @class.cls_members_dot = members_dot
+
+  ; A keyword argument of a call of the class names a parameter of `__init__`.
+  ; Only a lookup with the marker takes this path, so a plain reference to the class does not.
+  ; The path pops the marker and pushes it back. The `__init__` function pops it again.
+  node keyword_pop
+  node keyword_push
+  node keyword_init
+  node keyword_dot
+  attr (keyword_pop) pop_symbol = "<kw>"
+  attr (keyword_push) push_symbol = "<kw>"
+  attr (keyword_init) push_symbol = "__init__"
+  attr (keyword_dot) push_symbol = "."
+  edge @name.def -> keyword_pop
+  edge keyword_pop -> keyword_push
+  edge keyword_push -> keyword_init
+  edge keyword_init -> keyword_dot
+  edge keyword_dot -> members_dot
 
   ; Members of the class chain to the members of its base classes.
   ; The members node has popped the "." of the lookup. The base class pops it again, so push it

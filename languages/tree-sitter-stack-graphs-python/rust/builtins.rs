@@ -646,3 +646,9 @@ fn staticmethod_parameter_has_no_class_scope() {
     let source = "class A(Exception):\n    @staticmethod\n    def make(x):\n        return x.args\n";
     assert!(resolve_lines(source, "args").is_empty());
 }
+
+#[test]
+fn keyword_argument_resolves_to_the_parameter_through_a_base_class() {
+    let source = "class B:\n    def __init__(self, size):\n        pass\n\nclass C(B):\n    pass\n\nC(size=1)\n";
+    assert_eq!(resolve(source, "size"), vec![Target::Local(1)]);
+}
