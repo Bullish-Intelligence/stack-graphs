@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- A function inside another function sees the bindings of the enclosing function before the final bindings of the module and the builtins. The same holds for a lambda inside a function. Before this change, a name of the enclosing function resolved together with a module or builtin name.
+
 - The body of a lambda sees the bindings of the enclosing function, as the body of a nested function does. A parameter of the lambda shadows them.
 
 - A read of a property, such as `obj.prop.attribute`, behaves like a call of the method. The return annotation or the returned value of the method gives the type of the read. This holds for `property`, `cached_property`, and `abstractproperty`.

@@ -238,6 +238,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 
 inherit .bottom
 inherit .bottom_precedence
+inherit .local_precedence
 inherit .class_member_attr_scope
 inherit .class_parent_scope
 inherit .class_self_scope
@@ -365,6 +366,8 @@ inherit .parent_module
   let @mod.bottom = @mod.after_scope
   ; The final bindings of the module shadow the bindings that precede a top-level function.
   let @mod.bottom_precedence = 1
+  ; The bindings that precede a top-level function have the lowest precedence.
+  let @mod.local_precedence = 0
   let @mod.global = global
   let @mod.global_dot = global_dot
 
@@ -708,9 +711,12 @@ inherit .parent_module
   edge @stmt.before_scope -> @block.before_scope
 }
 
-(function_definition (block) @block)
+(function_definition (block) @block) @func
 {
   edge @block.before_scope -> @block.local_scope
+  ; A function inside another function sees the bindings of the enclosing function before the final
+  ; bindings of the module. A top-level function sees the final bindings of the module first.
+  attr (@block.before_scope -> @block.local_scope) precedence = @func.local_precedence
 }
 
 [
@@ -833,6 +839,8 @@ inherit .parent_module
   edge @body.before_scope -> drop_scope
   attr (@body.before_scope -> drop_scope) precedence = @func.bottom_precedence
   let @body.bottom_precedence = 0
+  ; In a function, the enclosing bindings win over the final bindings of the module.
+  let @body.local_precedence = 1
   edge drop_scope -> @func.bottom
   attr (drop_scope) type = "drop_scopes"
   attr (@func.call) pop_scoped_symbol = "()"
@@ -854,6 +862,7 @@ inherit .parent_module
   edge @body.after_scope -> @lam.bottom
   attr (@body.after_scope -> @lam.bottom) precedence = @lam.bottom_precedence
   edge @body.after_scope -> @lam.local_scope
+  attr (@body.after_scope -> @lam.local_scope) precedence = @lam.local_precedence
   attr (@lam.call) pop_scoped_symbol = "()"
   attr (return_value) is_exported
   let @lam.function_returns = return_value
