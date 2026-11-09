@@ -688,19 +688,35 @@ inherit .parent_module
   (block (_) @stmt)
 ]
 {
-  ; A statement lets the bindings before it flow past it. This holds for an `if` statement with
-  ; an `else` branch, and for a `try` statement with a handler, too, although every branch of
-  ; such a statement could bind a name. The rules keep the edge on purpose.
+  ; A statement lets the bindings before it flow past it. This holds for each statement, except an
+  ; `if` statement with an `else` clause. In that statement, every branch can bind a name, so the
+  ; bindings before the statement are not reachable after it, unless a branch passes them through.
+  ; Each branch passes the bindings before the statement through itself. A `try` statement with a
+  ; handler keeps the edge, as the body of the `try` can stop at any point.
   ;
-  ; Without it, each branch must pass the earlier bindings through itself. Take a branch that
-  ; binds the name, like `x = 1`, and a branch that does not. The path through the first branch
-  ; passes its own binding with a lower precedence, so the binding shadows that path. The path
-  ; through the second branch is not shadowed. Both paths join at the node before the statement.
-  ; The path stitcher keeps one path of two similar paths at a join, and it keeps the first. It
-  ; can keep the path that the binding shadows. Then the earlier binding is lost, although the
-  ; second branch can reach it. A missing target is worse than the extra target of this edge.
-  edge @stmt.after_scope -> @stmt.before_scope
+  ; The path stitcher must find the path through each branch. Take a branch that binds the name,
+  ; like `x = 1`, and a branch that does not. The path through the first branch passes the earlier
+  ; binding with a lower precedence, so its own binding shadows that path. The path through the
+  ; second branch is not shadowed. Both paths join at the node before the statement, and they are
+  ; similar. The detector of similar paths keeps the first of them by default. It can keep the
+  ; path that the binding shadows, and lose the earlier binding that the second branch reaches.
+  ; So the language configuration turns on shadow aware detection of similar paths. Every stitcher
+  ; that resolves these graphs must do so. Without it, a name can lose a binding.
+  if (not (eq (node-type @stmt) "if_statement")) {
+    edge @stmt.after_scope -> @stmt.before_scope
+  }
   let @stmt.local_scope = @stmt.before_scope
+}
+
+; An `if` statement without `else` keeps the edge.
+(if_statement !alternative) @stmt
+{
+  edge @stmt.after_scope -> @stmt.before_scope
+}
+
+(if_statement alternative: (elif_clause) .) @stmt
+{
+  edge @stmt.after_scope -> @stmt.before_scope
 }
 
 [

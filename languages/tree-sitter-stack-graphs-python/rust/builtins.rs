@@ -101,7 +101,7 @@ fn resolve_lines(source: &str, name: &str) -> Vec<(String, usize)> {
             &graph,
             &mut partials,
             f,
-            StitcherConfig::default(),
+            StitcherConfig::default().with_shadow_aware_similar_paths(true),
             &stack_graphs::NoCancellation,
             |_, _, p| paths.push(p.clone()),
         )
@@ -125,7 +125,7 @@ fn resolve_lines(source: &str, name: &str) -> Vec<(String, usize)> {
         ForwardPartialPathStitcher::find_all_complete_partial_paths(
             &mut DatabaseCandidates::new(&graph, &mut partials, &db),
             std::iter::once(reference),
-            StitcherConfig::default(),
+            StitcherConfig::default().with_shadow_aware_similar_paths(true),
             &stack_graphs::NoCancellation,
             |_, _, p| paths.push(p.clone()),
         )

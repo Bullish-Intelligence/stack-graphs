@@ -114,5 +114,9 @@ pub fn try_language_configuration(
             },
         )?;
     }
+    // The rules of an `if` statement with an `else` clause have no edge around the branches. Each
+    // branch passes the bindings before the statement. This needs shadow aware similar path
+    // detection. Set the same option in every stitcher that resolves these graphs.
+    lc.shadow_aware_similar_paths = true;
     Ok(lc)
 }
