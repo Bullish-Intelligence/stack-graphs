@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Identifiers in expressions no longer create a second reference node that has no edges.
 
+- The rules define the loader's `<builtins>` file as the module `<builtins>`. Before this change, no reference reached the builtins file.
+
+- `src/builtins.py` now holds a stub of the Python builtins: functions, classes with their methods, the exception hierarchy, and module constants such as `__name__`. The stub derives from typeshed `stdlib/builtins.pyi` (Apache-2.0 and MIT).
+
 ## v0.3.0 -- 2024-12-12
 
 - The `tree-sitter-stack-graphs` dependency is updated to version 0.10.

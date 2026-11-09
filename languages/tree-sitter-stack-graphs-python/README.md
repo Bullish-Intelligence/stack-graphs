@@ -82,6 +82,8 @@ The project is organized as follows:
 
 - The stack graph rules are defined in `src/stack-graphs.tsg`.
 - Builtins sources and configuration are defined in `src/builtins.it` and `builtins.cfg` respectively.
+- `src/builtins.py` is a stub of the Python builtins. It comes from typeshed (`stdlib/builtins.pyi`, Apache-2.0 and MIT). The header of the file names the typeshed commit. The loader gives the file the path `<builtins>`. The rules in `src/stack-graphs.tsg` define that path as the module `<builtins>`, and every module reaches it through its global scope.
+- `rust/builtins.rs` tests that names resolve to the builtins. The `.py` fixtures in `test` cannot check this, because a `defined:` assertion can only name lines of the fixture file.
 - Tests are put into the `test` directory.
 
 ### Running Tests
