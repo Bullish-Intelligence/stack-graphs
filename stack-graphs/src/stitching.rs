@@ -995,9 +995,20 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
             // or the current end node has multiple incoming edges. If neither of these hold, the path cannot end in a cycle.
             let has_precondition_variables = partial_path.symbol_stack_precondition.has_variable()
                 || partial_path.scope_stack_precondition.has_variable();
-            let cycles = cycle_detector
-                .is_cyclic(graph, partials, db, &mut self.appended_paths)
-                .expect("cyclic test failed when stitching partial paths");
+            let cycles = match cycle_detector.is_cyclic(graph, partials, db, &mut self.appended_paths)
+            {
+                Ok(cycles) => cycles,
+                Err(_error) => {
+                    // The cycle test rebuilds the suspected cycle on a new path at the end node.
+                    // It appends the fragments to initial stack variables, not to the concrete
+                    // stacks of the real path.  This can fail to unify.  For example, a "drop
+                    // scopes" end node gives a scope stack without variables, which cannot
+                    // satisfy a fragment that needs concrete scopes.  A failure means we cannot
+                    // decide if the path is cyclic.  Discontinue the path, as for a proven cycle.
+                    copious_debugging!("      is discontinued: cycle test failed: {:?}", _error);
+                    return 0;
+                }
+            };
             let cyclic = match has_precondition_variables {
                 // If the precondition has no variables, we allow cycles that strengthen the
                 // precondition, because we know they cannot strengthen the precondition of
