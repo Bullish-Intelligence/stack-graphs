@@ -325,6 +325,22 @@ inherit .parent_module
       ;
       set module_def = next_def
     }
+
+    ; The loader names the builtins file "<builtins>", with no ".py" suffix.
+    ; Define it as module "<builtins>", so the global scope of every file can reach it.
+    "^<builtins>$"
+    {
+      node def_dot
+      attr (def_dot) pop_symbol = "."
+      node next_def
+      ;
+      edge module_def -> def_dot
+      edge def_dot -> next_def
+      ;
+      attr (module_def) pop_symbol = "<builtins>", is_definition, source_node = @mod, empty_source_span
+      ;
+      set module_def = next_def
+    }
   }
 
   edge ROOT_NODE -> mod_file_def
