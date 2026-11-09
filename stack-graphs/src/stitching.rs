@@ -1452,6 +1452,48 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
     }
 }
 
+impl ForwardPartialPathStitcher<Handle<PartialPath>> {
+    /// Finds all complete partial paths that start at one reference, and releases the memory of
+    /// the search when it ends.
+    ///
+    /// This method runs [`find_all_complete_partial_paths`][] inside a
+    /// [`PartialPaths::with_scope`][].  A search adds cells to `partials`, and plain `partials`
+    /// never gives them back.  Here, every cell that the search added drops when the method
+    /// returns, even when `config` bounds the run or the cancellation flag stops it.  The
+    /// memory of one reference does not add to the memory of the next one.
+    ///
+    /// The database is read-only.  The `visit` closure sees each complete path while the search
+    /// is alive.  The path holds handles that the method drops at the end.  Copy the plain data
+    /// that you need, for example the end node, and do not keep the path or its stacks.
+    ///
+    /// Check [`Stats::bounded`][] in the result.  A bounded search can lack paths.
+    ///
+    /// [`find_all_complete_partial_paths`]: #method.find_all_complete_partial_paths
+    pub fn find_complete_partial_paths_in_scope<F>(
+        graph: &StackGraph,
+        partials: &mut PartialPaths,
+        database: &Database,
+        reference: Handle<Node>,
+        config: StitcherConfig,
+        cancellation_flag: &dyn CancellationFlag,
+        visit: F,
+    ) -> Result<Stats, CancellationError>
+    where
+        F: FnMut(&StackGraph, &mut PartialPaths, &PartialPath),
+    {
+        partials.with_scope(|partials| {
+            let mut candidates = DatabaseCandidates::new(graph, partials, database);
+            Self::find_all_complete_partial_paths(
+                &mut candidates,
+                std::iter::once(reference),
+                config,
+                cancellation_flag,
+                visit,
+            )
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     /// The distribution of the number of initial paths

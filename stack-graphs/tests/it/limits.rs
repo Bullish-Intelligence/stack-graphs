@@ -7,10 +7,15 @@
 
 //! Tests for the limits of a stitcher run, and for scoped resolution.
 
+use std::collections::BTreeSet;
+
 use stack_graphs::arena::Handle;
 use stack_graphs::graph::Node;
 use stack_graphs::graph::StackGraph;
+use stack_graphs::partial::PartialPath;
 use stack_graphs::partial::PartialPaths;
+use stack_graphs::stitching::Database;
+use stack_graphs::stitching::DatabaseCandidates;
 use stack_graphs::stitching::ForwardPartialPathStitcher;
 use stack_graphs::stitching::GraphEdgeCandidates;
 use stack_graphs::stitching::StitchBound;
@@ -18,6 +23,7 @@ use stack_graphs::stitching::StitcherConfig;
 use stack_graphs::stitching::Stats;
 use stack_graphs::NoCancellation;
 
+use crate::test_graphs;
 use crate::util::create_pop_symbol_node;
 use crate::util::create_push_symbol_node;
 use crate::util::create_scope_node;
@@ -194,4 +200,116 @@ fn a_bounded_run_keeps_the_paths_it_found() {
     let (count, stats) = run(&graph, reference, config);
     assert_eq!(1, count);
     assert_eq!(Some(StitchBound::Work), stats.bounded);
+}
+
+fn database_for(graph: &StackGraph, partials: &mut PartialPaths) -> Database {
+    let mut db = Database::new();
+    for file in graph.iter_files() {
+        ForwardPartialPathStitcher::find_minimal_partial_path_set_in_file(
+            graph,
+            partials,
+            file,
+            StitcherConfig::default(),
+            &NoCancellation,
+            |graph, partials, path| {
+                db.add_partial_path(graph, partials, path.clone());
+            },
+        )
+        .expect("should never be cancelled");
+    }
+    db
+}
+
+fn resolve_all(
+    graph: &StackGraph,
+    partials: &mut PartialPaths,
+    db: &Database,
+    scoped: bool,
+    config: StitcherConfig,
+) -> BTreeSet<String> {
+    let mut results = BTreeSet::new();
+    let references = graph
+        .iter_nodes()
+        .filter(|handle| graph[*handle].is_reference())
+        .collect::<Vec<_>>();
+    for reference in references {
+        let visit = |graph: &StackGraph, partials: &mut PartialPaths, path: &PartialPath| {
+            results.insert(path.display(graph, partials).to_string());
+        };
+        if scoped {
+            ForwardPartialPathStitcher::find_complete_partial_paths_in_scope(
+                graph,
+                partials,
+                db,
+                reference,
+                config,
+                &NoCancellation,
+                visit,
+            )
+            .expect("should never be cancelled");
+        } else {
+            ForwardPartialPathStitcher::find_all_complete_partial_paths(
+                &mut DatabaseCandidates::new(graph, partials, db),
+                std::iter::once(reference),
+                config,
+                &NoCancellation,
+                visit,
+            )
+            .expect("should never be cancelled");
+        }
+    }
+    results
+}
+
+#[test]
+fn scoped_resolution_matches_plain_resolution_and_releases_memory() {
+    let graph = test_graphs::class_field_through_function_parameter::new::<StackGraph>();
+    let mut partials = PartialPaths::new();
+    let db = database_for(&graph, &mut partials);
+
+    let before = partials.allocated_cells();
+    let first = resolve_all(&graph, &mut partials, &db, true, StitcherConfig::default());
+    assert_eq!(before, partials.allocated_cells());
+    assert_eq!(6, first.len());
+
+    // The scope must also undo changes to older cells.  A second pass and a plain pass must
+    // see the same results.
+    let second = resolve_all(&graph, &mut partials, &db, true, StitcherConfig::default());
+    assert_eq!(before, partials.allocated_cells());
+    assert_eq!(first, second);
+
+    let plain = resolve_all(&graph, &mut partials, &db, false, StitcherConfig::default());
+    assert!(partials.allocated_cells() > before);
+    assert_eq!(first, plain);
+}
+
+#[test]
+fn scoped_resolution_releases_memory_of_a_bounded_run() {
+    let graph = test_graphs::class_field_through_function_parameter::new::<StackGraph>();
+    let mut partials = PartialPaths::new();
+    let db = database_for(&graph, &mut partials);
+    let expected = resolve_all(&graph, &mut partials, &db, true, StitcherConfig::default());
+
+    let before = partials.allocated_cells();
+    let tight = StitcherConfig::default().with_max_work(Some(1));
+    let bounded = resolve_all(&graph, &mut partials, &db, true, tight);
+    assert_eq!(before, partials.allocated_cells());
+    assert!(bounded.len() < expected.len());
+
+    // After the bounded runs, a normal run still finds everything.
+    let again = resolve_all(&graph, &mut partials, &db, true, StitcherConfig::default());
+    assert_eq!(expected, again);
+}
+
+#[test]
+fn scopes_release_memory_on_panic() {
+    let mut partials = PartialPaths::new();
+    let before = partials.allocated_cells();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        partials.with_scope(|_| panic!("stop"));
+    }));
+    assert!(result.is_err());
+    assert_eq!(before, partials.allocated_cells());
+    // The checkpoint is gone, so a new scope works.
+    partials.with_scope(|_| ());
 }
