@@ -122,3 +122,55 @@ def inherited(child: Child):
 def unannotated(x):
     x.bar
     #  ^ defined:
+
+# A dotted wrapper, with a nested wrapper and a string.
+import typing
+
+def dotted(a: typing.Optional[Foo], b: typing.Union[Foo, Other], c: typing.Optional["Foo"], d: typing.Optional[typing.Union[Foo, Other]], e: typing.Optional[Foo | Other], f: typing.Union["Foo", Other]):
+    a.bar
+    #  ^ defined: 5
+    b.bar
+    #  ^ defined: 5
+    b.baz
+    #  ^ defined: 9
+    c.bar
+    #  ^ defined: 5
+    d.bar
+    #  ^ defined: 5
+    d.baz
+    #  ^ defined: 9
+    e.bar
+    #  ^ defined: 5
+    e.baz
+    #  ^ defined: 9
+    f.bar
+    #  ^ defined: 5
+    f.baz
+    #  ^ defined: 9
+
+# A wrapper that holds a generic type, and a union with a generic type.
+def generic_members(a: Optional[typing.List[Foo]], b: Box[Foo] | None, c: typing.List[Foo] | None, d: typing.Optional[Box[Foo]]):
+    a.append
+    #  ^ defined:
+    b.put
+    #  ^ defined: 90
+    c.append
+    #  ^ defined:
+    d.put
+    #  ^ defined: 90
+
+# An annotation can name the class that holds it, or a class that the module defines later.
+class Node:
+    def link(self, other: Node | None, later: Later, text: "Later") -> Node | None:
+        other.link
+        #     ^ defined: 164
+        later.use
+        #     ^ defined: 175
+        text.use
+        #    ^ defined: 175
+        self.link(other).link
+        #                ^ defined: 164
+
+class Later:
+    def use(self):
+        pass

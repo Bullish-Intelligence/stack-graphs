@@ -1210,8 +1210,10 @@ inherit .parent_module
 {
   edge @name.output -> @name.local_scope
   edge @name.output -> @name.class_parent_scope
-  ; A name in the local scope shadows a name in the scope around the class.
-  attr (@name.output -> @name.local_scope) precedence = 1
+  ; A name in the local scope shadows a name in the scope around the class. That scope shadows the
+  ; final bindings of the module, which an annotation can reach as a forward reference.
+  attr (@name.output -> @name.local_scope) precedence = 2
+  attr (@name.output -> @name.class_parent_scope) precedence = 1
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
   attr (@name.output) node_reference = @name
@@ -1832,13 +1834,103 @@ inherit .parent_module
   edge @type.annot -> @name.output
 }
 
-;; a generic type with a dotted container, like typing.List[Foo]: follow the container only
-(type
-  (subscript
-    value: (attribute attribute: (identifier) @_last) @head
-    (#not-match? @_last "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly|Union)$"))) @type
+;; An annotation can name a class that the module defines later, or the class that holds the
+;; annotation. This holds for a string, and for every annotation of a module with
+;; `from __future__ import annotations`. The name of an annotation reaches the final bindings of
+;; the module, as the body of a function does. The scope of the name shadows these bindings.
+(type (identifier) @name)
 {
-  edge @type.annot -> @head.output
+  edge @name.output -> @name.bottom
+}
+
+(type (attribute object: (identifier) @name))
+{
+  edge @name.output -> @name.bottom
+}
+
+;; the operands of a union written with "|", up to four operands
+(type [
+  (binary_operator left: (identifier) @name)
+  (binary_operator right: (identifier) @name)
+  (binary_operator left: (binary_operator left: (identifier) @name))
+  (binary_operator left: (binary_operator right: (identifier) @name))
+  (binary_operator left: (binary_operator left: (binary_operator left: (identifier) @name)))
+  (binary_operator left: (binary_operator left: (binary_operator right: (identifier) @name)))
+])
+{
+  edge @name.output -> @name.bottom
+}
+
+;; An annotation of a name, like `Foo[Bar]`, that the parser reads as an expression of
+;; subscript, like the argument of `typing.Optional[Foo[Bar]]`. The node follows the classes that
+;; the subscript names. Another rule connects it to the head, the wrapped type, or the members.
+(subscript) @sub
+{
+  node @sub.annot
+}
+
+(type (subscript) @sub) @type
+{
+  edge @type.annot -> @sub.annot
+}
+
+;; a generic type, like typing.List[Foo] or List[Foo]: follow the container only
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ] @head
+  (#not-match? @_head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly|Union)$")) @sub
+{
+  edge @sub.annot -> @head.output
+}
+
+;; a wrapper of a type, like typing.Optional[Foo]: follow the first argument
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  .
+  subscript: [(identifier) (attribute)] @argument
+  (#match? @_head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly)$")) @sub
+{
+  edge @sub.annot -> @argument.output
+}
+
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  .
+  subscript: [(subscript) (binary_operator)] @argument
+  (#match? @_head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly)$")) @sub
+{
+  edge @sub.annot -> @argument.annot
+}
+
+;; a union type, like typing.Union[Foo, Bar]: follow every argument
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  subscript: [(identifier) (attribute)] @argument
+  (#eq? @_head "Union")) @sub
+{
+  edge @sub.annot -> @argument.output
+}
+
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  subscript: [(subscript) (binary_operator)] @argument
+  (#eq? @_head "Union")) @sub
+{
+  edge @sub.annot -> @argument.annot
 }
 
 ;; a string that holds a class name, like "Foo"
@@ -1850,9 +1942,54 @@ inherit .parent_module
   node reference
   attr (reference) node_reference = @content
   edge reference -> @content.local_scope
-  attr (reference -> @content.local_scope) precedence = 1
+  attr (reference -> @content.local_scope) precedence = 2
   edge reference -> @content.class_parent_scope
+  attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.bottom
   edge @type.annot -> reference
+}
+
+;; a string that holds a class name, as the first argument of a wrapper, like typing.Optional["Foo"]
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  .
+  subscript: (string
+    (string_content) @content
+    (#match? @content "^[A-Za-z_][A-Za-z0-9_]*$"))
+  (#match? @_head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly)$")) @sub
+{
+  node reference
+  attr (reference) node_reference = @content
+  edge reference -> @content.local_scope
+  attr (reference -> @content.local_scope) precedence = 2
+  edge reference -> @content.class_parent_scope
+  attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.bottom
+  edge @sub.annot -> reference
+}
+
+;; a string that holds a class name, as an argument of a union, like typing.Union["Foo", Bar]
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  subscript: (string
+    (string_content) @content
+    (#match? @content "^[A-Za-z_][A-Za-z0-9_]*$"))
+  (#eq? @_head "Union")) @sub
+{
+  node reference
+  attr (reference) node_reference = @content
+  edge reference -> @content.local_scope
+  attr (reference -> @content.local_scope) precedence = 2
+  edge reference -> @content.class_parent_scope
+  attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.bottom
+  edge @sub.annot -> reference
 }
 
 ;; a wrapper of a type, like Optional[Foo]: follow the first type argument
@@ -1883,8 +2020,10 @@ inherit .parent_module
 {
   attr (@head.output) node_reference = @head
   edge @head.output -> @head.local_scope
-  attr (@head.output -> @head.local_scope) precedence = 1
+  attr (@head.output -> @head.local_scope) precedence = 2
   edge @head.output -> @head.class_parent_scope
+  attr (@head.output -> @head.class_parent_scope) precedence = 1
+  edge @head.output -> @head.bottom
   edge @type.annot -> @head.output
 }
 
@@ -1920,14 +2059,20 @@ inherit .parent_module
 }
 
 ;; a generic type in a union, like List[Foo] | None: follow the container only
-(binary_operator left: (subscript value: (identifier) @operand) operator: "|") @union
+(binary_operator left: (subscript) @operand operator: "|") @union
 {
-  edge @union.annot -> @operand.output
+  edge @union.annot -> @operand.annot
 }
 
-(binary_operator operator: "|" right: (subscript value: (identifier) @operand)) @union
+(binary_operator operator: "|" right: (subscript) @operand) @union
 {
-  edge @union.annot -> @operand.output
+  edge @union.annot -> @operand.annot
+}
+
+;; a union that the parser reads as a union type, like list[Foo] | None
+(type (union_type (type) @member)) @type
+{
+  edge @type.annot -> @member.annot
 }
 
 ;;;; Annotated names

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- An annotation follows a dotted wrapper such as `typing.Optional[Foo]` and `typing.Union[Foo, Bar]`, a union type such as `list[Foo] | None`, and a string argument such as `typing.Optional["Foo"]`.
+
+- A name in an annotation reaches the final bindings of the module. An annotation can name a class that the module defines later, or the class that holds the annotation.
+
 - Identifiers in expressions no longer create a second reference node that has no edges.
 
 - The rules define the loader's `<builtins>` file as the module `<builtins>`. Before this change, no reference reached the builtins file.
