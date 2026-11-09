@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A parameter `*args: T` behaves like a tuple, and `**kwargs: T` behaves like a dict. The annotation `T` describes the elements, so the rules do not follow it.
 
+- A `yield` expression no longer makes the build fail. Before, a statement like `x = yield value` stopped the build of the file.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12
