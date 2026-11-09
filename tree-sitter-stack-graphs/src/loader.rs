@@ -52,6 +52,12 @@ pub struct LanguageConfiguration {
     /// incorrectly set to true, performance of path finding suffers from exponential
     /// blow up.
     pub no_similar_paths_in_file: bool,
+    /// Can be set to true if the stack graph rules need shadow aware similar path detection. The
+    /// path stitcher then keeps the first path that nothing can shadow, besides the first path,
+    /// of the similar paths that it finds. See
+    /// [`StitcherConfig::with_shadow_aware_similar_paths`][stack_graphs::stitching::StitcherConfig::with_shadow_aware_similar_paths].
+    /// A language that sets this flag must set it for every stitcher that resolves its graphs.
+    pub shadow_aware_similar_paths: bool,
 }
 
 impl LanguageConfiguration {
@@ -111,6 +117,7 @@ impl LanguageConfiguration {
             builtins,
             special_files: FileAnalyzers::new(),
             no_similar_paths_in_file: false,
+            shadow_aware_similar_paths: false,
         })
     }
 
@@ -388,6 +395,19 @@ impl FileLanguageConfigurations<'_> {
         self.primary.is_some() || !self.secondary.is_empty()
     }
 
+    /// Returns whether any language configuration of the file asks for shadow aware similar path
+    /// detection.
+    pub fn shadow_aware_similar_paths(&self) -> bool {
+        let mut shadow_aware_similar_paths = false;
+        if let Some(lc) = &self.primary {
+            shadow_aware_similar_paths |= lc.shadow_aware_similar_paths;
+        }
+        for (lc, _) in &self.secondary {
+            shadow_aware_similar_paths |= lc.shadow_aware_similar_paths;
+        }
+        return shadow_aware_similar_paths;
+    }
+
     pub fn no_similar_paths_in_file(&self) -> bool {
         let mut no_similar_paths_in_file = true;
         if let Some(lc) = &self.primary {
@@ -610,6 +630,7 @@ impl PathLoader {
                     special_files: FileAnalyzers::new(),
                     // always detect similar paths, we don't know the language configuration when loading from the file system
                     no_similar_paths_in_file: false,
+                    shadow_aware_similar_paths: false,
                 };
                 self.cache.push((language.language, lc));
 

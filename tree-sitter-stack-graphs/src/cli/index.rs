@@ -306,6 +306,7 @@ impl<'a> Indexer<'a> {
         };
         let stitcher_config = StitcherConfig::default()
             .with_detect_similar_paths(!lcs.no_similar_paths_in_file())
+            .with_shadow_aware_similar_paths(lcs.shadow_aware_similar_paths())
             .with_collect_stats(self.stats.is_some());
 
         let source = file_reader.get(source_path)?;

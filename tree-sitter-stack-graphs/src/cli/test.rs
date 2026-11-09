@@ -276,8 +276,9 @@ impl TestArgs {
 
         file_status.processing();
 
-        let stitcher_config =
-            StitcherConfig::default().with_detect_similar_paths(!lc.no_similar_paths_in_file);
+        let stitcher_config = StitcherConfig::default()
+            .with_detect_similar_paths(!lc.no_similar_paths_in_file)
+            .with_shadow_aware_similar_paths(lc.shadow_aware_similar_paths);
         let mut partials = PartialPaths::new();
         let mut db = Database::new();
 

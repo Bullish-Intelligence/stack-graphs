@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Library
+
+- `LanguageConfiguration::shadow_aware_similar_paths` asks the path stitcher for shadow aware similar path detection. The test runner and the indexer set the option of the stitcher from it. `FileLanguageConfigurations::shadow_aware_similar_paths` reports it for a file.
+
 ## v0.10.0 -- 2024-12-12
 
 Upgraded `tree-sitter` dependency to version 0.24.
