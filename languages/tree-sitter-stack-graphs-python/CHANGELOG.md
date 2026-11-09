@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The name in an attribute assignment target, as `x` in `obj.x = value`, is a reference. It resolves through the object as the name in a read of the attribute does. It also resolves to its own definition. The definition behaviour of `self.x = value` stays.
 
+- `import a.b.c` binds the name `a` to the package `a`. A use of `a` alone, as in `a.foo` or `a.b.c.X`, resolves in the package and reaches the submodules `b` and `c` as members.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12

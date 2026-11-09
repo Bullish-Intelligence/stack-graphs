@@ -605,6 +605,19 @@ inherit .parent_module
   edge @outer.after_scope -> @first.def
 }
 
+;;;; Package Name
+;;
+;; `import a.b.c` binds the name `a` to the package `a`. The submodules `b` and `c` are members of
+;; the package. A use of `a` alone, as in `a.b.c.X` or `a.foo`, resolves in the package `a`, and it
+;; reaches the submodules `b` and `c` as members. The definition of `a` continues to the module
+;; reference `a`.
+
+(import_statement
+  name: (dotted_name . (identifier) @first . (identifier)))
+{
+  edge @first.def -> @first.ref
+}
+
 ;;;; Wildcard Import
 ;;
 ;; Wildcard imports simply pass through
