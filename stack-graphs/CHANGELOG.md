@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `StitcherLimits` and `StitcherConfig::with_limits` bound the work, the queue length, the arena growth, and the path length of one stitcher run. All limits are off by default.
+- `Stats::bounded` reports the limit that stopped a run or cut paths, as `StitchBound`. `Stats` also records `work`, `peak_queue_len`, and `arena_cells_added`.
+- `PartialPaths::with_scope` drops all cells that a closure adds. `PartialPaths::allocated_cells` counts the cells.
+- `ForwardPartialPathStitcher::find_complete_partial_paths_in_scope` resolves one reference in such a scope.
+
+### Changed
+
+- `Database::find_candidate_partial_paths` and `find_candidate_partial_paths_from_root` take `&self`. `DatabaseCandidates::new` takes `&Database`. Queries no longer change the database.
+
 ## v0.14.1 -- 2024-12-12
 
 ### Fixed
