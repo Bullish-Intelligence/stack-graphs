@@ -924,14 +924,23 @@ inherit .parent_module
 (class_definition
     body: (block
             (function_definition
+                name: (identifier) @method_name
                 parameters: 
                     (parameters . (identifier) @first_param)
                 body: (block) @method_body
             )
          )
-) 
+) @class
 {
-  edge @first_param.def -> @first_param.class_self_scope
+  ; The methods `__new__`, `__init_subclass__`, and `__class_getitem__` take the class as the
+  ; first parameter, with no decorator.
+  if (or (eq (source-text @method_name) "__new__") (or (eq (source-text @method_name) "__init_subclass__") (eq (source-text @method_name) "__class_getitem__"))) {
+    edge @first_param.def -> @class.cls_call
+    edge @first_param.def -> @class.cls_members_dot
+    edge @first_param.def -> @class.cls_keyword_pop
+  } else {
+    edge @first_param.def -> @first_param.class_self_scope
+  }
   edge @first_param.class_member_attr_scope -> @first_param.output
   edge @first_param.output -> @method_body.after_scope
   attr (@first_param.output) push_node = @first_param
@@ -964,6 +973,7 @@ inherit .parent_module
   if (eq (source-text @decorator) "classmethod") {
     edge @first_param.def -> @class.cls_call
     edge @first_param.def -> @class.cls_members_dot
+    edge @first_param.def -> @class.cls_keyword_pop
   }
 }
 
@@ -1079,6 +1089,7 @@ inherit .parent_module
   ; Only a lookup with the marker takes this path, so a plain reference to the class does not.
   ; The path pops the marker and pushes it back. The `__init__` function pops it again.
   node keyword_pop
+  let @class.cls_keyword_pop = keyword_pop
   node keyword_push
   node keyword_init
   node keyword_dot

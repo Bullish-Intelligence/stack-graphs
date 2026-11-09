@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- The first parameter of a classmethod, and of `__new__`, `__init_subclass__`, and `__class_getitem__`, behaves like the class. A call of it resolves the keyword arguments to the parameters of `__init__`, and `cls.attribute` resolves in the class.
+
 - An annotation follows a dotted wrapper such as `typing.Optional[Foo]` and `typing.Union[Foo, Bar]`, a union type such as `list[Foo] | None`, and a string argument such as `typing.Optional["Foo"]`.
 
 - A name in an annotation reaches the final bindings of the module. An annotation can name a class that the module defines later, or the class that holds the annotation.
