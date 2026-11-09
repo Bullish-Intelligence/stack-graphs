@@ -2664,6 +2664,7 @@ if none @is_async {
   (function_expression)
   (generator_function)
   (import)
+  (instantiation_expression)
   (member_expression)
   (meta_property)
   (new_expression)
@@ -4041,6 +4042,14 @@ if none @is_async {
 }
 
 
+
+;; Instantiation Expression (PATCH)
+
+(instantiation_expression . (_)@expr (type_arguments)@type_args)@inst {
+  edge @expr.lexical_scope -> @inst.lexical_scope
+  edge @type_args.lexical_scope -> @inst.lexical_scope
+  edge @inst.type -> @expr.type
+}
 
 ;; Non-null Expression
 
