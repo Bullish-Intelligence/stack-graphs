@@ -1621,6 +1621,9 @@ inherit .parent_module
   attribute: (identifier) @name)
 {
   attr (@name.input) is_definition
+  ; The name of an assignment target is also a reference. It resolves through the object, as the
+  ; name in a read of the attribute does.
+  attr (@name.output) is_reference
 }
 
 

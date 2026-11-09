@@ -652,3 +652,14 @@ fn keyword_argument_resolves_to_the_parameter_through_a_base_class() {
     let source = "class B:\n    def __init__(self, size):\n        pass\n\nclass C(B):\n    pass\n\nC(size=1)\n";
     assert_eq!(resolve(source, "size"), vec![Target::Local(1)]);
 }
+
+#[test]
+fn attribute_assignment_target_resolves_to_the_member() {
+    let source = "e = Exception()\ne.args = 1\n";
+    let targets = resolve(source, "args");
+    assert!(
+        targets.contains(&Target::Builtin("args = None".to_string())),
+        "{:?}",
+        targets
+    );
+}

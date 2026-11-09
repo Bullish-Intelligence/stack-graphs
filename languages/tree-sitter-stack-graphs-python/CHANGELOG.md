@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The name in a keyword argument, as `mro` in `f(mro=1)`, is a reference. It resolves to the parameter of the called function. For a call of a class, it resolves to the parameter of `__init__`, also through a base class.
 
+- The name in an attribute assignment target, as `x` in `obj.x = value`, is a reference. It resolves through the object as the name in a read of the attribute does. It also resolves to its own definition. The definition behaviour of `self.x = value` stays.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12
