@@ -1642,3 +1642,168 @@ inherit .parent_module
 ;;
 ;; END BIG GNARLY DISJUNCTION
 ;;
+
+;;
+;;    #
+;;   # #   #    # #    #  ####  #####   ##   ##### #  ####  #    #  ####
+;;  #   #  ##   # ##   # #    #   #    #  #    #   # #    # ##   # #
+;; #     # # #  # # #  # #    #   #   #    #   #   # #    # # #  #  ####
+;; ####### #  # # #  # # #    #   #   ######   #   # #    # #  # #      #
+;; #     # #   ## #   ## #    #   #   #    #   #   # #    # #   ## #    #
+;; #     # #    # #    #  ####    #   #    #   #   #  ####  #    #  ####
+;;
+;; Annotations
+
+;;;; Following written annotations
+;;
+;; A written annotation makes a name behave like an instance of the annotated class, as a call of
+;; the class does. The rules follow the written annotation only. They infer no type.
+;;
+;; The name pushes the "()" symbol of the class, then the class. A reference to the name still
+;; resolves to the name only, because the "()" symbol stays on the symbol stack. Only a member
+;; lookup, like `name.attribute`, completes in the class.
+;;
+;; (type).annot     node that leads to the classes that the annotation names
+;;
+;; An annotation follows a class name, a dotted class name, an optional type, a union type, a
+;; string that holds a class name, and the container of a generic type. It does not follow the
+;; element type of a generic type.
+
+(type) @type
+{
+  node @type.annot
+}
+
+;; a name or a dotted name
+(type [
+  (identifier)
+  (attribute)
+] @name) @type
+{
+  edge @type.annot -> @name.output
+}
+
+;; a string that holds a class name, like "Foo"
+(type
+  (string
+    (string_content) @content
+    (#match? @content "^[A-Za-z_][A-Za-z0-9_]*$"))) @type
+{
+  node reference
+  attr (reference) node_reference = @content
+  edge reference -> @content.local_scope
+  attr (reference -> @content.local_scope) precedence = 1
+  edge reference -> @content.class_parent_scope
+  edge @type.annot -> reference
+}
+
+;; a wrapper of a type, like Optional[Foo]: follow the first type argument
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter . (type) @argument)
+    (#match? @_head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly)$"))) @type
+{
+  edge @type.annot -> @argument.annot
+}
+
+;; a union type, like Union[Foo, Bar]: follow every type argument
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter (type) @argument)
+    (#eq? @_head "Union"))) @type
+{
+  edge @type.annot -> @argument.annot
+}
+
+;; a generic type, like List[Foo]: follow the container only
+(type
+  (generic_type
+    . (identifier) @head
+    (#not-match? @head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly|Union)$"))) @type
+{
+  attr (@head.output) node_reference = @head
+  edge @head.output -> @head.local_scope
+  attr (@head.output -> @head.local_scope) precedence = 1
+  edge @head.output -> @head.class_parent_scope
+  edge @type.annot -> @head.output
+}
+
+;; a union written with "|", like Foo | None
+(binary_operator operator: "|") @union
+{
+  node @union.annot
+}
+
+(type (binary_operator operator: "|") @union) @type
+{
+  edge @type.annot -> @union.annot
+}
+
+(binary_operator left: [(identifier) (attribute)] @operand operator: "|") @union
+{
+  edge @union.annot -> @operand.output
+}
+
+(binary_operator operator: "|" right: [(identifier) (attribute)] @operand) @union
+{
+  edge @union.annot -> @operand.output
+}
+
+(binary_operator left: (binary_operator operator: "|") @operand operator: "|") @union
+{
+  edge @union.annot -> @operand.annot
+}
+
+(binary_operator operator: "|" right: (binary_operator operator: "|") @operand) @union
+{
+  edge @union.annot -> @operand.annot
+}
+
+;; a generic type in a union, like List[Foo] | None: follow the container only
+(binary_operator left: (subscript value: (identifier) @operand) operator: "|") @union
+{
+  edge @union.annot -> @operand.output
+}
+
+(binary_operator operator: "|" right: (subscript value: (identifier) @operand)) @union
+{
+  edge @union.annot -> @operand.output
+}
+
+;;;; Annotated names
+;;
+;; The annotation of a parameter, a variable, or an attribute.
+
+[
+  (parameter/typed_parameter . (identifier) @name type: (type) @type)
+  (parameter/typed_default_parameter name: (identifier) @name type: (type) @type)
+]
+{
+  node instance
+  attr (instance) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.def -> instance
+  edge instance -> @type.annot
+}
+
+;; `x: Foo = value`, `x: Foo`, and `self.x: Foo = value`
+(assignment left: (_) @pattern type: (type) @type)
+{
+  node instance
+  attr (instance) push_scoped_symbol = "()", scope = @pattern.literal_scope
+  edge @pattern.input -> instance
+  edge instance -> @type.annot
+}
+
+;;;; Return annotations
+;;
+;; `def make() -> Foo` makes a call of `make` behave like an instance of Foo.
+
+(function_definition return_type: (type) @type) @func
+{
+  node instance
+  attr (instance) push_scoped_symbol = "()", scope = @func.literal_scope
+  edge @func.function_returns -> instance
+  edge instance -> @type.annot
+}

@@ -332,6 +332,55 @@ fn reference_to_instance_of_a_subclass_does_not_resolve_to_the_base_class() {
 }
 
 #[test]
+fn annotated_parameter_has_members_of_the_builtin_class() {
+    assert_member("def f(x: int):\n    x.bit_length\n", "bit_length", "int", &method("bit_length"));
+    assert_member("def f(s: 'str'):\n    s.upper\n", "upper", "str", &method("upper"));
+    assert_member("def f(s: str | None):\n    s.upper\n", "upper", "str", &method("upper"));
+    assert_member("def f(s: str = ''):\n    s.upper\n", "upper", "str", &method("upper"));
+}
+
+#[test]
+fn annotated_generic_resolves_the_container_only() {
+    assert_member("def f(a: list[int]):\n    a.append\n", "append", "list", &method("append"));
+    // The element type does not reach the name.
+    assert!(resolve_lines("def f(a: list[int]):\n    a.bit_length\n", "bit_length").is_empty());
+}
+
+#[test]
+fn annotated_variable_has_members_of_the_builtin_class() {
+    assert_member("x: dict = {}\nx.get\n", "get", "dict", &method("get"));
+    assert_member("x: set\nx.add\n", "add", "set", &method("add"));
+}
+
+#[test]
+fn annotated_exception_reaches_the_base_class() {
+    assert_member(
+        "def f(e: KeyError):\n    e.with_traceback\n",
+        "with_traceback",
+        "BaseException",
+        &method("with_traceback"),
+    );
+}
+
+#[test]
+fn return_annotation_gives_members_of_the_builtin_class() {
+    assert_member(
+        "def f() -> str: ...\n\nf().upper\n",
+        "upper",
+        "str",
+        &method("upper"),
+    );
+}
+
+#[test]
+fn reference_to_annotated_variable_resolves_to_the_variable_only() {
+    let source = "def f(x: int):\n    return x\n";
+    assert_eq!(resolve(source, "x"), vec![Target::Local(0)]);
+    let source = "y: int = 1\nprint(y)\n";
+    assert_eq!(resolve(source, "y"), vec![Target::Local(0)]);
+}
+
+#[test]
 fn local_class_named_like_a_literal_class_does_not_capture_literals() {
     // The literal uses the global scope, so a local class `str` does not change it.
     let source = "class str:\n    def upper(self): ...\n\nx = 'a'.join\n";
