@@ -668,6 +668,17 @@ inherit .parent_module
   (block (_) @stmt)
 ]
 {
+  ; A statement lets the bindings before it flow past it. This holds for an `if` statement with
+  ; an `else` branch, and for a `try` statement with a handler, too, although every branch of
+  ; such a statement could bind a name. The rules keep the edge on purpose.
+  ;
+  ; Without it, each branch must pass the earlier bindings through itself. Take a branch that
+  ; binds the name, like `x = 1`, and a branch that does not. The path through the first branch
+  ; passes its own binding with a lower precedence, so the binding shadows that path. The path
+  ; through the second branch is not shadowed. Both paths join at the node before the statement.
+  ; The path stitcher keeps one path of two similar paths at a join, and it keeps the first. It
+  ; can keep the path that the binding shadows. Then the earlier binding is lost, although the
+  ; second branch can reach it. A missing target is worse than the extra target of this edge.
   edge @stmt.after_scope -> @stmt.before_scope
   let @stmt.local_scope = @stmt.before_scope
 }
