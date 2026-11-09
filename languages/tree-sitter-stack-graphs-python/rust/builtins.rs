@@ -20,6 +20,7 @@ use stack_graphs::stitching::StitcherConfig;
 use tree_sitter_stack_graphs::NoCancellation;
 use tree_sitter_stack_graphs::Variables;
 use tree_sitter_stack_graphs_python::STACK_GRAPHS_BUILTINS_SOURCE;
+use tree_sitter_stack_graphs_python::STUB_MODULES;
 
 const BUILTINS_FILE: &str = "<builtins>";
 const TEST_FILE: &str = "test.py";
@@ -29,6 +30,9 @@ const TEST_FILE: &str = "test.py";
 enum Target {
     /// A definition in the builtins. The string is the source line of the definition.
     Builtin(String),
+    /// A definition in a stub module. The first string is the name of the stub file. The second
+    /// string is the source line of the definition.
+    Stub(String, String),
     /// A definition in the test source. The number is the zero-based line.
     Local(usize),
 }
@@ -38,14 +42,26 @@ fn resolve(source: &str, name: &str) -> Vec<Target> {
     let builtin_lines = STACK_GRAPHS_BUILTINS_SOURCE.lines().collect::<Vec<_>>();
     resolve_lines(source, name)
         .into_iter()
-        .map(|(builtin, line)| {
-            if builtin {
+        .map(|(file, line)| {
+            if file == BUILTINS_FILE {
                 Target::Builtin(builtin_lines[line].trim().to_string())
-            } else {
+            } else if file == TEST_FILE {
                 Target::Local(line)
+            } else {
+                let text = stub_lines(&file)[line].trim().to_string();
+                Target::Stub(file, text)
             }
         })
         .collect()
+}
+
+/// The lines of the stub module with the file name `file`.
+fn stub_lines(file: &str) -> Vec<&'static str> {
+    let stub = STUB_MODULES
+        .iter()
+        .find(|s| s.file_name() == file)
+        .unwrap_or_else(|| panic!("no stub module {}", file));
+    stub.source.lines().collect()
 }
 
 /// Return the class that contains the builtins line `line`, and the trimmed text of the line.
@@ -61,9 +77,9 @@ fn builtin_member(line: usize) -> (String, String) {
 }
 
 /// Resolve all references in `source` and return the definitions of the references named `name`.
-/// A definition is a pair. The first item tells whether the definition is in the builtins.
+/// A definition is a pair. The first item is the name of the file of the definition.
 /// The second item is the zero-based line of the definition.
-fn resolve_lines(source: &str, name: &str) -> Vec<(bool, usize)> {
+fn resolve_lines(source: &str, name: &str) -> Vec<(String, usize)> {
     let lc = tree_sitter_stack_graphs_python::language_configuration(&NoCancellation);
     let mut graph = StackGraph::new();
     graph.add_from_graph(&lc.builtins).expect("add builtins");
@@ -123,7 +139,7 @@ fn resolve_lines(source: &str, name: &str) -> Vec<(bool, usize)> {
         for end in ends {
             let line = graph.source_info(end).expect("source info").span.start.line;
             let end_file = graph[end].file().expect("definition file");
-            let target = (graph[end_file].name() == BUILTINS_FILE, line);
+            let target = (graph[end_file].name().to_string(), line);
             if !targets.contains(&target) {
                 targets.push(target);
             }
@@ -147,7 +163,7 @@ fn assert_builtin(source: &str, name: &str, definition: &str) {
 fn assert_member(source: &str, name: &str, class: &str, definition: &str) {
     let targets = resolve_lines(source, name);
     assert_eq!(targets.len(), 1, "reference {} in:\n{}\n{:?}", name, source, targets);
-    assert!(targets[0].0, "reference {} is not a builtin in:\n{}", name, source);
+    assert_eq!(targets[0].0, BUILTINS_FILE, "reference {} is not a builtin in:\n{}", name, source);
     assert_eq!(
         builtin_member(targets[0].1),
         (class.to_string(), definition.to_string()),
@@ -446,5 +462,108 @@ fn conditional_binding_keeps_the_builtin() {
     let source = "def f(a):\n    if a:\n        id = 1\n    return id\n";
     let targets = resolve(source, "id");
     assert_eq!(targets.len(), 2, "{:?}", targets);
+    assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
+}
+
+/// Check that the reference `name` resolves to the definition in the stub module `module`.
+/// A name that is an alias of a builtin class, like `List = list`, also resolves to the class.
+/// No other definition is allowed.
+fn assert_stub(source: &str, name: &str, module: &str, definition: &str) {
+    let file = format!("<stubs>/{}.py", module);
+    let targets = resolve(source, name);
+    assert!(
+        targets.contains(&Target::Stub(file, definition.to_string())),
+        "reference {} in:\n{}\n{:?}",
+        name,
+        source,
+        targets
+    );
+    assert!(
+        targets.len() == 1 || (targets.len() == 2 && targets.iter().any(|t| matches!(t, Target::Builtin(_)))),
+        "reference {} in:\n{}\n{:?}",
+        name,
+        source,
+        targets
+    );
+}
+
+#[test]
+fn from_import_of_a_typing_name_resolves_to_the_stub() {
+    let source = "from typing import List, Optional, Any\n";
+    assert_stub(source, "List", "typing", "List = list");
+    assert_stub(source, "Optional", "typing", "Optional = None");
+    assert_stub(source, "Any", "typing", "class Any:");
+}
+
+#[test]
+fn imported_typing_module_resolves_to_the_stub() {
+    let source = "import typing\n\nx = typing.Dict\n";
+    assert_stub(source, "Dict", "typing", "Dict = dict");
+    // The module name resolves to the stub file, which has no line of its own.
+    assert!(!resolve_lines(source, "typing").is_empty());
+}
+
+#[test]
+fn aliased_import_of_a_typing_name_resolves_to_the_stub() {
+    let source = "from typing import Sequence as Seq\n\nx: Seq\n";
+    assert_stub(source, "Sequence", "typing", "class Sequence(Reversible, Collection):");
+}
+
+#[test]
+fn unknown_typing_name_does_not_resolve() {
+    assert!(resolve_lines("from typing import Nonexistent\n", "Nonexistent").is_empty());
+}
+
+#[test]
+fn typing_aliases_have_members_of_the_builtin_class() {
+    for (annotation, name, class) in [
+        ("List[int]", "append", "list"),
+        ("Dict[str, int]", "items", "dict"),
+        ("Set[int]", "add", "set"),
+        ("FrozenSet[int]", "union", "frozenset"),
+        ("Tuple[int, str]", "count", "tuple"),
+        ("Type[object]", "mro", "type"),
+    ] {
+        let head = annotation.split('[').next().unwrap();
+        let source = format!(
+            "from typing import {}\n\ndef f(a: {}):\n    a.{}\n",
+            head, annotation, name
+        );
+        assert_member(&source, name, class, &method(name));
+    }
+}
+
+#[test]
+fn typing_alias_in_an_optional_annotation_has_members_of_the_builtin_class() {
+    let source = "from typing import List, Optional\n\ndef f(a: Optional[List[int]]):\n    a.append\n";
+    // `Optional` follows the first type argument, which is the container `List`.
+    assert_member(source, "append", "list", &method("append"));
+}
+
+#[test]
+fn typing_alias_through_the_module_has_members_of_the_builtin_class() {
+    let source = "import typing\n\ndef f(a: typing.List[int]):\n    a.append\n";
+    assert_member(source, "append", "list", &method("append"));
+}
+
+#[test]
+fn typing_alias_for_a_variable_has_members_of_the_builtin_class() {
+    let source = "from typing import Dict\n\nx: Dict[str, int] = {}\nx.get\n";
+    assert_member(source, "get", "dict", &method("get"));
+}
+
+#[test]
+fn typing_class_has_its_methods() {
+    let source = "from typing import Mapping\n\ndef f(m: Mapping):\n    m.keys\n";
+    let targets = resolve_lines(source, "keys");
+    assert_eq!(targets.len(), 1, "{:?}", targets);
+    assert_eq!(targets[0].0, "<stubs>/typing.py");
+}
+
+#[test]
+fn local_name_shadows_a_typing_import() {
+    let source = "from typing import List\n\nclass List:\n    pass\n\nx = List\n";
+    // The last reference `List` is in `x = List`.
+    let targets = resolve(source, "List");
     assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
 }

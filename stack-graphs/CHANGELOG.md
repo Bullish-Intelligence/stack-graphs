@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- `StackGraph::add_from_graph` no longer panics when the other graph has several files and an edge joins nodes of two files, such as an edge from the root node.
+
 ### Added
 
 - `StitcherLimits` and `StitcherConfig::with_limits` bound the work, the queue length, the arena growth, and the path length of one stitcher run. All limits are off by default.

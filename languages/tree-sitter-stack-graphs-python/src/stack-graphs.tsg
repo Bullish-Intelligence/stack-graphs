@@ -1683,6 +1683,15 @@ inherit .parent_module
   edge @type.annot -> @name.output
 }
 
+;; a generic type with a dotted container, like typing.List[Foo]: follow the container only
+(type
+  (subscript
+    value: (attribute attribute: (identifier) @_last) @head
+    (#not-match? @_last "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly|Union)$"))) @type
+{
+  edge @type.annot -> @head.output
+}
+
 ;; a string that holds a class name, like "Foo"
 (type
   (string

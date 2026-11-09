@@ -198,6 +198,26 @@ fn can_add_graph_to_empty_graph() {
 }
 
 #[test]
+fn can_add_graph_with_root_edges_to_several_files() {
+    // The root node has an edge to a node of each file.
+    let mut other = StackGraph::new();
+    let file_a = other.get_or_create_file("a.py");
+    let file_b = other.get_or_create_file("b.py");
+    let a = other.internal_scope(file_a, 0);
+    let b = other.internal_scope(file_b, 0);
+    other.add_edge(StackGraph::root_node(), a, 0);
+    other.add_edge(StackGraph::root_node(), b, 0);
+
+    let mut graph = StackGraph::new();
+    graph.add_from_graph(&other).expect("Adding graph failed");
+    assert_eq!(
+        graph.outgoing_edges(StackGraph::root_node()).count(),
+        2,
+        "the root node must keep its edges to the nodes of both files"
+    );
+}
+
+#[test]
 fn can_get_incoming_edges() {
     let mut graph = StackGraph::new();
     let file = graph.get_or_create_file("test.py");

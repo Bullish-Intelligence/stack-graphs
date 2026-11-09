@@ -1642,14 +1642,16 @@ impl StackGraph {
                     };
                 }
             }
-            for other_node in nodes.keys().cloned() {
-                for other_edge in other.outgoing_edges(other_node) {
-                    self.add_edge(
-                        nodes[&other_edge.source],
-                        nodes[&other_edge.sink],
-                        other_edge.precedence,
-                    );
-                }
+        }
+        // Add the edges after the nodes of all files. An edge can join nodes of two files, for
+        // example an edge from the root node.
+        for other_node in nodes.keys().cloned() {
+            for other_edge in other.outgoing_edges(other_node) {
+                self.add_edge(
+                    nodes[&other_edge.source],
+                    nodes[&other_edge.sink],
+                    other_edge.precedence,
+                );
             }
         }
         Ok(files.into_values().collect())

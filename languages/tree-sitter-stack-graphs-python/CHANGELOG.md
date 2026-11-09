@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A written annotation makes a name behave like an instance of the annotated class: typed parameters, annotated variables and attributes, return annotations, `Optional`, `Union`, `Foo | None`, and string annotations. The rules infer no type. A generic type follows the container only.
 
+- The crate ships stub modules. `STUB_MODULES` lists them, and `language_configuration` adds them to the builtins graph. The first stub module is `typing`, derived from typeshed `stdlib/typing.pyi`. `List`, `Dict`, `Set`, `FrozenSet`, `Tuple`, `Type`, and `Text` are aliases of the builtin classes. `script/gen_stubs.py` generates the stubs.
+
+- An annotation with a dotted container, like `typing.List[Foo]`, follows the container.
+
+- The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
+
 ## v0.3.0 -- 2024-12-12
 
 - The `tree-sitter-stack-graphs` dependency is updated to version 0.10.
