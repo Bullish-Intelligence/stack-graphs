@@ -567,3 +567,37 @@ fn local_name_shadows_a_typing_import() {
     let targets = resolve(source, "List");
     assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
 }
+
+#[test]
+fn definition_after_a_function_shadows_the_builtin() {
+    let source = "def f():\n    return len(1)\n\ndef len(x):\n    pass\n";
+    assert_eq!(resolve(source, "len"), vec![Target::Local(3)]);
+}
+
+#[test]
+fn variable_after_a_function_shadows_the_builtin() {
+    let source = "def f():\n    return id\n\nid = 5\n";
+    assert_eq!(resolve(source, "id"), vec![Target::Local(3)]);
+}
+
+#[test]
+fn parameter_shadows_a_definition_after_the_function() {
+    let source = "def f(len):\n    return len\n\ndef len(x):\n    pass\n";
+    assert_eq!(resolve(source, "len"), vec![Target::Local(0)]);
+}
+
+#[test]
+fn builtin_stays_visible_when_the_module_does_not_define_the_name() {
+    let source = "def f():\n    return len(1)\n";
+    assert_eq!(
+        resolve(source, "len"),
+        vec![Target::Builtin("def len(*args, **kwargs): ...".to_string())]
+    );
+}
+
+#[test]
+fn nested_function_keeps_the_binding_of_the_enclosing_function() {
+    let source = "y = 1\ndef outer():\n    y = 2\n    def inner():\n        return y\n";
+    let targets = resolve(source, "y");
+    assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
+}

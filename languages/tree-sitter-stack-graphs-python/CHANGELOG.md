@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A comprehension has a scope of its own. Its variables no longer share a symbol with a variable of the same name in the enclosing scope, and they no longer leak into that scope.
 
+- The body of a top-level function sees the final bindings of the module with a higher precedence than the bindings before the function. A module-level definition after the function now shadows a builtin of the same name, and a rebinding after the function shadows the earlier binding.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12

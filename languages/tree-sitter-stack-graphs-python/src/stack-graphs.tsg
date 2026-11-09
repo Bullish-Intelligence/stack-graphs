@@ -236,6 +236,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 ;; ^^^^^^^^^^^^^^^^^^^
 
 inherit .bottom
+inherit .bottom_precedence
 inherit .class_member_attr_scope
 inherit .class_parent_scope
 inherit .class_self_scope
@@ -361,6 +362,8 @@ inherit .parent_module
   let @mod.parent_module = parent_module_ref
   let @mod.grandparent_module = grandparent_module_ref
   let @mod.bottom = @mod.after_scope
+  ; The final bindings of the module shadow the bindings that precede a top-level function.
+  let @mod.bottom_precedence = 1
   let @mod.global = global
   let @mod.global_dot = global_dot
 
@@ -807,9 +810,15 @@ inherit .parent_module
 
   edge @func.call -> return_value
   edge @body.before_scope -> @params.after_scope
-  ; A parameter shadows a name from an outer scope.
-  attr (@body.before_scope -> @params.after_scope) precedence = 1
+  ; A parameter shadows a name from an outer scope, and the final bindings of the module.
+  attr (@body.before_scope -> @params.after_scope) precedence = 2
+  ; The body sees the final bindings of the module, as the function can run after them. At a
+  ; top-level function, they shadow the bindings that precede the function and the builtins.
+  ; This way a module-level definition after the function shadows a builtin of the same name.
+  ; A function inside another function keeps both, as a name of the enclosing function must win.
   edge @body.before_scope -> drop_scope
+  attr (@body.before_scope -> drop_scope) precedence = @func.bottom_precedence
+  let @body.bottom_precedence = 0
   edge drop_scope -> @func.bottom
   attr (drop_scope) type = "drop_scopes"
   attr (@func.call) pop_scoped_symbol = "()"
