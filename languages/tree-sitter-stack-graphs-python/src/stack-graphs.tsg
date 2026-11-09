@@ -849,7 +849,11 @@ inherit .parent_module
   node @body.after_scope
 
   edge @lam.call -> return_value
+  ; The body sees the final bindings of the module, as the body of a function does, and the
+  ; bindings of the enclosing function. A parameter of the lambda shadows both.
   edge @body.after_scope -> @lam.bottom
+  attr (@body.after_scope -> @lam.bottom) precedence = @lam.bottom_precedence
+  edge @body.after_scope -> @lam.local_scope
   attr (@lam.call) pop_scoped_symbol = "()"
   attr (return_value) is_exported
   let @lam.function_returns = return_value

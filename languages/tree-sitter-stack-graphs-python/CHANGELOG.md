@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- The body of a lambda sees the bindings of the enclosing function, as the body of a nested function does. A parameter of the lambda shadows them.
+
 - A read of a property, such as `obj.prop.attribute`, behaves like a call of the method. The return annotation or the returned value of the method gives the type of the read. This holds for `property`, `cached_property`, and `abstractproperty`.
 
 - The first parameter of a classmethod, and of `__new__`, `__init_subclass__`, and `__class_getitem__`, behaves like the class. A call of it resolves the keyword arguments to the parameters of `__init__`, and `cls.attribute` resolves in the class.
