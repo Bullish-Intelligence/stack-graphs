@@ -179,12 +179,48 @@ fn builtin_class_method_through_class() {
 #[test]
 fn builtin_method_inherited_from_base_class() {
     // `with_traceback` is defined in `BaseException`, the base of `Exception`.
-    // The rules resolve members of an instance through one level of base classes only.
     assert_builtin(
         "x = Exception().with_traceback\n",
         "with_traceback",
         "def with_traceback(self, *args, **kwargs): ...",
     );
+}
+
+#[test]
+fn builtin_member_through_user_subclass_of_exception() {
+    // `MyError` derives from `Exception`, which derives from `BaseException`.
+    let source = "class MyError(Exception):\n    pass\n\nx = MyError().args\ny = MyError().with_traceback\n";
+    assert_builtin(source, "args", "args = None");
+    assert_builtin(
+        source,
+        "with_traceback",
+        "def with_traceback(self, *args, **kwargs): ...",
+    );
+}
+
+#[test]
+fn builtin_member_through_three_levels() {
+    // `KeyError` derives from `LookupError`, `Exception` and `BaseException`.
+    let source = "class MyKeyError(KeyError):\n    pass\n\nx = MyKeyError().args\n";
+    assert_builtin(source, "args", "args = None");
+    assert_builtin("x = KeyError().args\n", "args", "args = None");
+}
+
+#[test]
+fn builtin_class_member_through_user_subclass() {
+    let source = "class MyError(Exception):\n    pass\n\nx = MyError.with_traceback\n";
+    assert_builtin(
+        source,
+        "with_traceback",
+        "def with_traceback(self, *args, **kwargs): ...",
+    );
+}
+
+#[test]
+fn builtin_member_through_self_in_subclass() {
+    let source =
+        "class MyError(Exception):\n    def show(self):\n        return self.args\n";
+    assert_builtin(source, "args", "args = None");
 }
 
 #[test]

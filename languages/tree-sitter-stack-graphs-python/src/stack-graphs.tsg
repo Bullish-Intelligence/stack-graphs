@@ -970,6 +970,21 @@ inherit .parent_module
   attr (self_dot) pop_symbol = "."
   attr (@class.member_attrs) push_symbol = "."
   attr (self_scope) is_exported
+
+  ; Members of the class chain to the members of its base classes.
+  ; The members node has popped the "." of the lookup. The base class pops it again, so push it
+  ; back first. The self scope has not popped it yet, so it needs no push.
+  node members_super
+  attr (members_super) push_symbol = "."
+  edge @class.members -> members_super
+  edge members_super -> @class.super_scope
+
+  ; A member of the class shadows a member of a base class with the same name.
+  ; A name in the class body shadows an attribute that a method assigns through self.
+  ; The attribute lookup of a method reaches the base classes again through the self scope.
+  ; The class body must shadow it too, so the class body has the highest precedence.
+  attr (self_scope -> self_dot) precedence = 1
+  attr (@class.members -> @class.member_attrs) precedence = 1
 }
 
 (class_definition
@@ -988,6 +1003,7 @@ inherit .parent_module
     (_) @last_stmt .)) @class
 {
   edge @class.members -> @last_stmt.after_scope
+  attr (@class.members -> @last_stmt.after_scope) precedence = 2
 }
 
 (class_definition

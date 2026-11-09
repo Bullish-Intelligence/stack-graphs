@@ -9,7 +9,7 @@ class B(A):
     def method2(self):
         print self.some_attr, self.some_method()
         #          ^ defined: 3
-        #                          ^ defined: 5, 14
+        #                          ^ defined: 14
 
     def some_method(self):
         pass
@@ -25,4 +25,4 @@ class B(A):
 class C(B, c=False):
     def subclass(self):
         self.some_method()
-        #    ^ defined: 5, 14
+        #    ^ defined: 14
