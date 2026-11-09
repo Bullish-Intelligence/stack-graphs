@@ -381,7 +381,7 @@ impl Database {
     /// If the end node is the root node, returns paths with a symbol stack precondition
     /// that are compatible with the path's symbol stack post condition.
     pub fn find_candidate_partial_paths<R>(
-        &mut self,
+        &self,
         graph: &StackGraph,
         partials: &mut PartialPaths,
         path: &PartialPath,
@@ -407,7 +407,7 @@ impl Database {
     /// stack precondition that is compatible with a given symbol stack.
     #[cfg_attr(not(feature = "copious-debugging"), allow(unused_variables))]
     pub fn find_candidate_partial_paths_from_root<R>(
-        &mut self,
+        &self,
         graph: &StackGraph,
         partials: &mut PartialPaths,
         symbol_stack: Option<PartialSymbolStack>,
@@ -419,16 +419,21 @@ impl Database {
         // symbol stack precondition is compatible with the path.
         match symbol_stack {
             Some(symbol_stack) => {
-                let mut key =
-                    SymbolStackKey::from_partial_symbol_stack(partials, self, symbol_stack);
+                // The lookup does not add keys to the database.  A stack that has no key cannot
+                // equal the precondition of any root path, and cannot extend it.
+                let (mut key, key_exists) =
+                    SymbolStackKey::lookup_partial_symbol_stack(partials, self, symbol_stack);
                 copious_debugging!(
                     "      Search for symbol stack <{}>",
                     key.display(graph, self)
                 );
                 // paths that have exactly this symbol stack
-                if let Some(paths) = self
-                    .root_paths_by_precondition_without_variable
-                    .get(key.back_handle())
+                if let Some(paths) = key_exists
+                    .then(|| {
+                        self.root_paths_by_precondition_without_variable
+                            .get(key.back_handle())
+                    })
+                    .flatten()
                 {
                     #[cfg(feature = "copious-debugging")]
                     {
@@ -443,9 +448,12 @@ impl Database {
                 }
                 // paths that have an extension of this symbol stack
                 if symbol_stack.has_variable() {
-                    if let Some(paths) = self
-                        .root_paths_by_precondition_prefix
-                        .get(key.back_handle())
+                    if let Some(paths) = key_exists
+                        .then(|| {
+                            self.root_paths_by_precondition_prefix
+                                .get(key.back_handle())
+                        })
+                        .flatten()
                     {
                         #[cfg(feature = "copious-debugging")]
                         {
@@ -654,17 +662,19 @@ impl ToAppendable<Handle<PartialPath>, PartialPath> for Database {
     }
 }
 
+/// Finds candidate partial paths in a [`Database`][].  Queries do not change the database.  The
+/// `partials` argument is the only state that grows.
 pub struct DatabaseCandidates<'a> {
     graph: &'a StackGraph,
     partials: &'a mut PartialPaths,
-    database: &'a mut Database,
+    database: &'a Database,
 }
 
 impl<'a> DatabaseCandidates<'a> {
     pub fn new(
         graph: &'a StackGraph,
         partials: &'a mut PartialPaths,
-        database: &'a mut Database,
+        database: &'a Database,
     ) -> Self {
         Self {
             graph,
@@ -742,6 +752,22 @@ impl SymbolStackKey {
         db.symbol_stack_key_cache.insert(cache_key, handle);
     }
 
+    /// Pushes a symbol onto the back of this key, only if the database already has the result.
+    /// Returns whether it has.  The key does not change when it has not.
+    fn push_back_existing(&mut self, db: &Database, symbol: Handle<Symbol>) -> bool {
+        let cache_key = SymbolStackCacheKey {
+            head: symbol,
+            tail: self.back_handle(),
+        };
+        match db.symbol_stack_key_cache.get(&cache_key) {
+            Some(handle) => {
+                self.symbols = List::from_handle(*handle);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Pops a symbol from the back of this symbol stack key.
     fn pop_back(&mut self, db: &Database) -> Option<Handle<Symbol>> {
         // pop_front because we store the key's symbols in reverse order.
@@ -759,6 +785,24 @@ impl SymbolStackKey {
             result.push_back(db, symbol.symbol);
         }
         result
+    }
+
+    /// Extracts a symbol stack key from a partial symbol stack, without changing the database.
+    /// If the database lacks a key for the whole stack, this returns the longest prefix that has
+    /// a key, and `false`.  No partial path in the database has the whole stack as a precondition
+    /// prefix in that case.
+    fn lookup_partial_symbol_stack(
+        partials: &mut PartialPaths,
+        db: &Database,
+        mut stack: PartialSymbolStack,
+    ) -> (SymbolStackKey, bool) {
+        let mut result = SymbolStackKey::empty();
+        while let Some(symbol) = stack.pop_front(partials) {
+            if !result.push_back_existing(db, symbol.symbol) {
+                return (result, false);
+            }
+        }
+        (result, true)
     }
 
     /// Returns a handle to the back of the symbol stack key.
