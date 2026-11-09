@@ -21,6 +21,7 @@ mod can_jump_to_definition;
 mod can_jump_to_definition_with_forward_partial_path_stitching;
 mod cycles;
 mod graph;
+mod limits;
 mod partial;
 #[cfg(feature = "serde")]
 mod serde;

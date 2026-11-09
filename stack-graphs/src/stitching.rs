@@ -889,6 +889,17 @@ pub struct ForwardPartialPathStitcher<H> {
     similar_path_detector: Option<SimilarPathDetector<PartialPath>>,
     check_only_join_nodes: bool,
     max_work_per_phase: usize,
+    limits: StitcherLimits,
+    /// The `PartialPaths` cell count when the stitcher started.
+    arena_baseline: usize,
+    /// The work done so far.  See [`StitcherLimits::max_work`].
+    work: usize,
+    peak_queue_len: usize,
+    arena_cells_added: usize,
+    /// Set when a limit stopped the run, or cut paths.
+    bounded: Option<StitchBound>,
+    /// Set when the run stopped for good.
+    aborted: bool,
     initial_paths: usize,
     stats: Option<Stats>,
     #[cfg(feature = "copious-debugging")]
@@ -901,7 +912,7 @@ impl<H> ForwardPartialPathStitcher<H> {
     /// to ensure precondition variables are eliminated by calling [`PartialPath::eliminate_precondition_stack_variables`][].
     pub fn from_partial_paths<I>(
         _graph: &StackGraph,
-        _partials: &mut PartialPaths,
+        partials: &mut PartialPaths,
         initial_partial_paths: I,
     ) -> Self
     where
@@ -929,6 +940,14 @@ impl<H> ForwardPartialPathStitcher<H> {
             check_only_join_nodes: false,
             // By default, there's no artificial bound on the amount of work done per phase
             max_work_per_phase: usize::MAX,
+            // By default, there are no limits
+            limits: StitcherLimits::default(),
+            arena_baseline: partials.allocated_cells(),
+            work: 0,
+            peak_queue_len: 0,
+            arena_cells_added: 0,
+            bounded: None,
+            aborted: false,
             initial_paths,
             stats: None,
             #[cfg(feature = "copious-debugging")]
@@ -967,6 +986,17 @@ impl<H> ForwardPartialPathStitcher<H> {
         self.max_work_per_phase = max_work_per_phase;
     }
 
+    /// Sets the limits of this run.  See [`StitcherLimits`][].  By default, a stitcher has no
+    /// limits.
+    pub fn set_limits(&mut self, limits: StitcherLimits) {
+        self.limits = limits;
+    }
+
+    /// Returns why a limit stopped the run or cut paths, or `None` if no limit had an effect.
+    pub fn bounded(&self) -> Option<StitchBound> {
+        self.bounded
+    }
+
     /// Sets whether to collect statistics during stitching.
     pub fn set_collect_stats(&mut self, collect_stats: bool) {
         if !collect_stats {
@@ -987,7 +1017,13 @@ impl<H> ForwardPartialPathStitcher<H> {
         {
             stats.similar_paths_stats = similar_path_detector.stats();
         }
-        self.stats.unwrap_or_default()
+        // The limit counters are always available, even when the caller does not collect stats.
+        let mut stats = self.stats.unwrap_or_default();
+        stats.bounded = self.bounded;
+        stats.work = self.work;
+        stats.peak_queue_len = self.peak_queue_len;
+        stats.arena_cells_added = self.arena_cells_added;
+        stats
     }
 }
 
@@ -1107,6 +1143,13 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
         self.next_iteration.1.reserve(extension_count);
         self.next_iteration.2.reserve(extension_count);
         for (new_partial_path, new_cycle_detector) in self.extensions.drain(..) {
+            if let Some(max_path_length) = self.limits.max_path_length {
+                if new_partial_path.edges.len() > max_path_length {
+                    // Drop the path, and keep going.  The result can lack paths.
+                    self.bounded.get_or_insert(StitchBound::PathLength);
+                    continue;
+                }
+            }
             let check_similar_path = new_has_split
                 && (!self.check_only_join_nodes
                     || candidates.get_joining_candidate_degree(&new_partial_path)
@@ -1168,7 +1211,38 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
 
     /// Returns whether the algorithm has completed.
     pub fn is_complete(&self) -> bool {
-        self.queue.is_empty() && self.next_iteration.0.is_empty()
+        self.aborted || (self.queue.is_empty() && self.next_iteration.0.is_empty())
+    }
+
+    /// Checks the limits that can stop the run.  Returns whether the run must stop.
+    fn check_limits(&mut self, partials: &PartialPaths) -> bool {
+        let queue_len = self.queue.len() + self.next_iteration.0.len();
+        self.peak_queue_len = self.peak_queue_len.max(queue_len);
+        self.arena_cells_added = partials
+            .allocated_cells()
+            .saturating_sub(self.arena_baseline);
+        let reason = if self.limits.max_work.map_or(false, |max| self.work > max) {
+            Some(StitchBound::Work)
+        } else if self.limits.max_queue_len.map_or(false, |max| queue_len > max) {
+            Some(StitchBound::QueueLength)
+        } else if self
+            .limits
+            .max_arena_cells
+            .map_or(false, |max| self.arena_cells_added > max)
+        {
+            Some(StitchBound::ArenaCells)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            // Paths that earlier phases found stay available.
+            self.bounded = Some(reason);
+            self.aborted = true;
+            // Free the memory of the unprocessed paths now.
+            self.queue = VecDeque::new();
+            return true;
+        }
+        false
     }
 
     /// Runs the next phase of the algorithm.  We will have built up a set of incomplete partial
@@ -1191,6 +1265,9 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
         E: Fn(&StackGraph, &mut PartialPaths, &PartialPath) -> bool,
     {
         copious_debugging!("==> Start phase {}", self.phase_number);
+        if self.aborted {
+            return;
+        }
         self.queue.extend(izip!(
             self.next_iteration.0.drain(..),
             self.next_iteration.1.drain(..),
@@ -1215,7 +1292,13 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
                 );
                 continue;
             }
-            work_performed += self.extend(candidates, &partial_path, cycle_detector, has_split);
+            let extended = self.extend(candidates, &partial_path, cycle_detector, has_split);
+            work_performed += extended;
+            self.work += 1 + extended;
+            let (_, partials, _) = candidates.get_graph_partials_and_db();
+            if self.check_limits(partials) {
+                break;
+            }
             if work_performed >= self.max_work_per_phase {
                 break;
             }
@@ -1395,6 +1478,17 @@ pub struct Stats {
     pub node_visits: FrequencyDistribution<crate::graph::NodeID>,
     /// The distribution of the number of similar paths between node pairs.
     pub similar_paths_stats: SimilarPathStats,
+    /// The limit that stopped the run or cut paths, if any.  A bounded run can lack results.
+    /// Unlike the other fields, the stitcher records this field even when it does not collect
+    /// statistics.
+    pub bounded: Option<StitchBound>,
+    /// The work done.  See [`StitcherLimits::max_work`].  Always recorded.
+    pub work: usize,
+    /// The largest number of paths that waited for extension.  Always recorded.
+    pub peak_queue_len: usize,
+    /// The number of cells that the run added to the `PartialPaths` arenas.  Recorded at each
+    /// extension, so it can lag by one path.  Always recorded.
+    pub arena_cells_added: usize,
 }
 
 impl std::ops::AddAssign<Self> for Stats {
@@ -1411,6 +1505,10 @@ impl std::ops::AddAssign<Self> for Stats {
         self.root_visits += rhs.root_visits;
         self.node_visits += rhs.node_visits;
         self.similar_paths_stats += rhs.similar_paths_stats;
+        self.bounded = self.bounded.or(rhs.bounded);
+        self.work += rhs.work;
+        self.peak_queue_len = self.peak_queue_len.max(rhs.peak_queue_len);
+        self.arena_cells_added += rhs.arena_cells_added;
     }
 }
 
@@ -1427,7 +1525,60 @@ impl std::ops::AddAssign<&Self> for Stats {
         self.root_visits += rhs.root_visits;
         self.node_visits += &rhs.node_visits;
         self.similar_paths_stats += &rhs.similar_paths_stats;
+        self.bounded = self.bounded.or(rhs.bounded);
+        self.work += rhs.work;
+        self.peak_queue_len = self.peak_queue_len.max(rhs.peak_queue_len);
+        self.arena_cells_added += rhs.arena_cells_added;
     }
+}
+
+/// The reason why a limit of a stitcher run had an effect.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StitchBound {
+    /// The run exceeded [`StitcherLimits::max_work`].  The run stopped.
+    Work,
+    /// The run exceeded [`StitcherLimits::max_queue_len`].  The run stopped.
+    QueueLength,
+    /// The run exceeded [`StitcherLimits::max_arena_cells`].  The run stopped.
+    ArenaCells,
+    /// The run met a path longer than [`StitcherLimits::max_path_length`].  The run dropped that
+    /// path and went on.
+    PathLength,
+}
+
+impl std::fmt::Display for StitchBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            StitchBound::Work => "work",
+            StitchBound::QueueLength => "queue-length",
+            StitchBound::ArenaCells => "arena-cells",
+            StitchBound::PathLength => "path-length",
+        })
+    }
+}
+
+/// Limits on the cost of one stitcher run.  A run is one call of
+/// [`find_all_complete_partial_paths`][ForwardPartialPathStitcher::find_all_complete_partial_paths]
+/// or one stitcher that you drive yourself.  Every limit is off by default, and a run without
+/// limits behaves as before.
+///
+/// When a limit has an effect, the run reports it in [`Stats::bounded`].  A bounded run is not
+/// the same as a run that found nothing.  The paths that the run found before it stopped stay
+/// valid, but the set can lack paths.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StitcherLimits {
+    /// The maximum work of the run.  The run does one unit of work for each path that it
+    /// extends, and one more for each candidate that it appends to that path.  When the work
+    /// exceeds the limit, the run stops.
+    pub max_work: Option<usize>,
+    /// The maximum number of paths that wait for extension.  When the number exceeds the limit,
+    /// the run stops.
+    pub max_queue_len: Option<usize>,
+    /// The maximum number of cells that the run adds to the `PartialPaths` arenas.  This limit
+    /// bounds the memory of the run.  When the number exceeds the limit, the run stops.
+    pub max_arena_cells: Option<usize>,
+    /// The maximum number of edges in a path.  The run drops longer paths and goes on.
+    pub max_path_length: Option<usize>,
 }
 
 /// Configuration for partial path stitchers.
@@ -1437,6 +1588,8 @@ pub struct StitcherConfig {
     detect_similar_paths: bool,
     /// Collect statistics about path stitching.
     collect_stats: bool,
+    /// Limits on the cost of one run.
+    limits: StitcherLimits,
 }
 
 impl StitcherConfig {
@@ -1457,12 +1610,47 @@ impl StitcherConfig {
         self.collect_stats = collect_stats;
         self
     }
+
+    pub fn limits(&self) -> StitcherLimits {
+        self.limits
+    }
+
+    /// Sets all limits of a run.  See [`StitcherLimits`][].
+    pub fn with_limits(mut self, limits: StitcherLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Sets the work limit.  See [`StitcherLimits::max_work`].
+    pub fn with_max_work(mut self, max_work: Option<usize>) -> Self {
+        self.limits.max_work = max_work;
+        self
+    }
+
+    /// Sets the queue limit.  See [`StitcherLimits::max_queue_len`].
+    pub fn with_max_queue_len(mut self, max_queue_len: Option<usize>) -> Self {
+        self.limits.max_queue_len = max_queue_len;
+        self
+    }
+
+    /// Sets the arena limit.  See [`StitcherLimits::max_arena_cells`].
+    pub fn with_max_arena_cells(mut self, max_arena_cells: Option<usize>) -> Self {
+        self.limits.max_arena_cells = max_arena_cells;
+        self
+    }
+
+    /// Sets the path length limit.  See [`StitcherLimits::max_path_length`].
+    pub fn with_max_path_length(mut self, max_path_length: Option<usize>) -> Self {
+        self.limits.max_path_length = max_path_length;
+        self
+    }
 }
 
 impl StitcherConfig {
     fn apply<H>(&self, stitcher: &mut ForwardPartialPathStitcher<H>) {
         stitcher.set_similar_path_detection(self.detect_similar_paths);
         stitcher.set_collect_stats(self.collect_stats);
+        stitcher.set_limits(self.limits);
     }
 }
 
@@ -1471,6 +1659,7 @@ impl Default for StitcherConfig {
         Self {
             detect_similar_paths: true,
             collect_stats: false,
+            limits: StitcherLimits::default(),
         }
     }
 }
