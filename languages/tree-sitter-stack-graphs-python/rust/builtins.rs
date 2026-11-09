@@ -35,6 +35,35 @@ enum Target {
 
 /// Resolve all references in `source` and return the targets of the references named `name`.
 fn resolve(source: &str, name: &str) -> Vec<Target> {
+    let builtin_lines = STACK_GRAPHS_BUILTINS_SOURCE.lines().collect::<Vec<_>>();
+    resolve_lines(source, name)
+        .into_iter()
+        .map(|(builtin, line)| {
+            if builtin {
+                Target::Builtin(builtin_lines[line].trim().to_string())
+            } else {
+                Target::Local(line)
+            }
+        })
+        .collect()
+}
+
+/// Return the class that contains the builtins line `line`, and the trimmed text of the line.
+fn builtin_member(line: usize) -> (String, String) {
+    let builtin_lines = STACK_GRAPHS_BUILTINS_SOURCE.lines().collect::<Vec<_>>();
+    let owner = builtin_lines[..line]
+        .iter()
+        .rev()
+        .find_map(|l| l.strip_prefix("class "))
+        .map(|l| l.split(|c| c == '(' || c == ':').next().unwrap().to_string())
+        .unwrap_or_default();
+    (owner, builtin_lines[line].trim().to_string())
+}
+
+/// Resolve all references in `source` and return the definitions of the references named `name`.
+/// A definition is a pair. The first item tells whether the definition is in the builtins.
+/// The second item is the zero-based line of the definition.
+fn resolve_lines(source: &str, name: &str) -> Vec<(bool, usize)> {
     let lc = tree_sitter_stack_graphs_python::language_configuration(&NoCancellation);
     let mut graph = StackGraph::new();
     graph.add_from_graph(&lc.builtins).expect("add builtins");
@@ -74,7 +103,6 @@ fn resolve(source: &str, name: &str) -> Vec<Target> {
         .collect::<Vec<_>>();
     assert!(!references.is_empty(), "no reference named {}", name);
 
-    let builtin_lines = STACK_GRAPHS_BUILTINS_SOURCE.lines().collect::<Vec<_>>();
     let mut targets = Vec::new();
     for reference in references {
         let mut paths = Vec::new();
@@ -95,11 +123,7 @@ fn resolve(source: &str, name: &str) -> Vec<Target> {
         for end in ends {
             let line = graph.source_info(end).expect("source info").span.start.line;
             let end_file = graph[end].file().expect("definition file");
-            let target = if graph[end_file].name() == BUILTINS_FILE {
-                Target::Builtin(builtin_lines[line].trim().to_string())
-            } else {
-                Target::Local(line)
-            };
+            let target = (graph[end_file].name() == BUILTINS_FILE, line);
             if !targets.contains(&target) {
                 targets.push(target);
             }
@@ -113,6 +137,20 @@ fn assert_builtin(source: &str, name: &str, definition: &str) {
     assert_eq!(
         targets,
         vec![Target::Builtin(definition.to_string())],
+        "reference {} in:\n{}",
+        name,
+        source
+    );
+}
+
+/// Check that the reference `name` resolves to exactly one definition, a member of `class`.
+fn assert_member(source: &str, name: &str, class: &str, definition: &str) {
+    let targets = resolve_lines(source, name);
+    assert_eq!(targets.len(), 1, "reference {} in:\n{}\n{:?}", name, source, targets);
+    assert!(targets[0].0, "reference {} is not a builtin in:\n{}", name, source);
+    assert_eq!(
+        builtin_member(targets[0].1),
+        (class.to_string(), definition.to_string()),
         "reference {} in:\n{}",
         name,
         source
@@ -221,6 +259,83 @@ fn builtin_member_through_self_in_subclass() {
     let source =
         "class MyError(Exception):\n    def show(self):\n        return self.args\n";
     assert_builtin(source, "args", "args = None");
+}
+
+const ANY_METHOD: &str = "(self, *args, **kwargs): ...";
+
+fn method(name: &str) -> String {
+    format!("def {}{}", name, ANY_METHOD)
+}
+
+#[test]
+fn string_literal_is_a_str() {
+    assert_member("x = 'abc'.join\n", "join", "str", &method("join"));
+    assert_member("x = ', '.join(['a'])\n", "join", "str", &method("join"));
+    assert_member("x = '{}'.format(1)\n", "format", "str", &method("format"));
+    assert_member("x = f'a{1}'.upper\n", "upper", "str", &method("upper"));
+    assert_member("x = ('a' 'b').lower\n", "lower", "str", &method("lower"));
+}
+
+#[test]
+fn bytes_literal_is_a_bytes() {
+    assert_member("x = b'a'.decode\n", "decode", "bytes", &method("decode"));
+    assert_member("x = rb'a'.hex\n", "hex", "bytes", &method("hex"));
+    assert_member("x = (b'a' b'b').decode\n", "decode", "bytes", &method("decode"));
+}
+
+#[test]
+fn number_literals_are_instances() {
+    assert_member("x = (1).bit_length\n", "bit_length", "int", &method("bit_length"));
+    assert_member("x = 0x1F.bit_length\n", "bit_length", "int", &method("bit_length"));
+    assert_member("x = 1.5.is_integer\n", "is_integer", "float", &method("is_integer"));
+    assert_member("x = (1j).real\n", "real", "complex", &method("real"));
+}
+
+#[test]
+fn boolean_literal_is_a_bool_and_reaches_int() {
+    // `bool` derives from `int`, so this also checks that members chain through a base class.
+    assert_member("x = True.bit_length\n", "bit_length", "int", &method("bit_length"));
+    assert_member("x = False.bit_length\n", "bit_length", "int", &method("bit_length"));
+}
+
+#[test]
+fn container_literals_are_instances() {
+    assert_member("[1].append\n", "append", "list", &method("append"));
+    assert_member("[x for x in y].sort\n", "sort", "list", &method("sort"));
+    assert_member("{}.get\n", "get", "dict", &method("get"));
+    assert_member("{'a': 1}.items\n", "items", "dict", &method("items"));
+    assert_member("{k: v for k, v in y}.items\n", "items", "dict", &method("items"));
+    assert_member("{1}.add\n", "add", "set", &method("add"));
+    assert_member("{x for x in y}.union\n", "union", "set", &method("union"));
+    assert_member("(1, 2).count\n", "count", "tuple", &method("count"));
+    assert_member("x = 1, 2\nx.count\n", "count", "tuple", &method("count"));
+}
+
+#[test]
+fn variable_of_a_literal_has_members_of_the_class() {
+    assert_member("x = 'a'\ny = x.upper\n", "upper", "str", &method("upper"));
+    assert_member("x = []\nx.append(1)\n", "append", "list", &method("append"));
+}
+
+#[test]
+fn reference_to_variable_of_a_literal_resolves_to_the_variable_only() {
+    for value in ["'a'", "b'a'", "1", "1.5", "True", "[]", "{}", "{1}", "(1, 2)", "[x for x in y]"] {
+        let source = format!("x = {}\nprint(x)\n", value);
+        assert_eq!(resolve(&source, "x"), vec![Target::Local(0)], "{}", value);
+    }
+}
+
+#[test]
+fn reference_to_instance_of_a_subclass_does_not_resolve_to_the_base_class() {
+    let source = "class B:\n    pass\n\nclass A(B):\n    pass\n\nx = A()\nprint(x)\n";
+    assert_eq!(resolve(source, "x"), vec![Target::Local(6)]);
+}
+
+#[test]
+fn local_class_named_like_a_literal_class_does_not_capture_literals() {
+    // The literal uses the global scope, so a local class `str` does not change it.
+    let source = "class str:\n    def upper(self): ...\n\nx = 'a'.join\n";
+    assert_member(source, "join", "str", &method("join"));
 }
 
 #[test]

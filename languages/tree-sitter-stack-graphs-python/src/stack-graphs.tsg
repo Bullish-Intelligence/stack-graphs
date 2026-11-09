@@ -244,6 +244,7 @@ inherit .function_returns
 inherit .global
 inherit .global_dot
 inherit .grandparent_module
+inherit .literal_scope
 inherit .local_scope
 inherit .parent_module
 
@@ -370,6 +371,10 @@ inherit .parent_module
   node @mod.class_super_scope
   node @mod.function_returns
   node @mod.local_scope
+
+  ;; the scope that a literal pushes with the "()" symbol of its class
+  node @mod.literal_scope
+  attr (@mod.literal_scope) is_exported
 }
 
 ;;
@@ -960,7 +965,6 @@ inherit .parent_module
   edge members_dot -> @class.members
   edge call -> @class.call_drop
   edge @class.call_drop -> self_scope
-  edge self_scope -> @class.super_scope
   edge self_scope -> self_dot
   edge self_dot -> @class.members
   edge @class.members -> @class.member_attrs
@@ -978,6 +982,14 @@ inherit .parent_module
   attr (members_super) push_symbol = "."
   edge @class.members -> members_super
   edge members_super -> @class.super_scope
+
+  ; The self scope reaches the base classes only for a lookup of a member. The lookup has the "."
+  ; symbol on the symbol stack. A reference to a variable that holds an instance has no "." symbol,
+  ; so it does not resolve to a base class.
+  node self_super
+  attr (self_super) pop_symbol = "."
+  edge self_scope -> self_super
+  edge self_super -> members_super
 
   ; A member of the class shadows a member of a base class with the same name.
   ; A name in the class body shadows an attribute that a method assigns through self.
@@ -1088,17 +1100,201 @@ inherit .parent_module
   edge @name.new_bindings -> @name.def
 }
 
-(string) {}
+;;;; Literals
+;;
+;; A literal behaves like an instance of its builtin class, as the call `str()` does. The literal
+;; pushes the "()" symbol of the class, then the name of the class. The global scope of the file
+;; resolves the name in the builtins. A member of the literal, like `"a".join`, resolves to a member
+;; of the class.
+;;
+;; A reference to a variable that holds the literal does not resolve to the class. The "()" symbol
+;; stays on the symbol stack, so only a member lookup completes.
 
-(concatenated_string) {}
+;; a string
+(
+  (string (string_start) @_start) @lit
+  (#not-match? @_start "^([bB][rR]?|[rR][bB])")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "str"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
 
-(integer) {}
+;; a bytes string
+(
+  (string (string_start) @_start) @lit
+  (#match? @_start "^([bB][rR]?|[rR][bB])")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "bytes"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
 
-(float) {}
+;; concatenated strings
+(
+  (concatenated_string . (string (string_start) @_start)) @lit
+  (#not-match? @_start "^([bB][rR]?|[rR][bB])")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "str"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
 
-(true) {}
+;; concatenated bytes strings
+(
+  (concatenated_string . (string (string_start) @_start)) @lit
+  (#match? @_start "^([bB][rR]?|[rR][bB])")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "bytes"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
 
-(false) {}
+;; an integer
+(
+  (integer) @lit
+  (#not-match? @lit "[jJ]$")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "int"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a float
+(
+  (float) @lit
+  (#not-match? @lit "[jJ]$")
+)
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "float"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; an imaginary number
+[
+  (
+    (integer) @lit
+    (#match? @lit "[jJ]$")
+  )
+  (
+    (float) @lit
+    (#match? @lit "[jJ]$")
+  )
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "complex"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a boolean
+[
+  (true) @lit
+  (false) @lit
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "bool"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a list
+[
+  (list) @lit
+  (list_comprehension) @lit
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "list"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a dictionary
+[
+  (dictionary) @lit
+  (dictionary_comprehension) @lit
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "dict"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a set
+[
+  (set) @lit
+  (set_comprehension) @lit
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "set"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
+
+;; a tuple
+[
+  (tuple) @lit
+  (expression_list) @lit
+]
+{
+  node instance
+  node class
+  attr (instance) push_scoped_symbol = "()", scope = @lit.literal_scope
+  attr (class) push_symbol = "tuple"
+  edge @lit.output -> instance
+  edge instance -> class
+  edge class -> @lit.global_dot
+}
 
 (none) {}
 
@@ -1195,15 +1391,6 @@ inherit .parent_module
   edge @call.output -> @call.class_super_scope
 }
 
-(list) @list
-{
-  node called
-
-  edge @list.output -> called
-  edge called -> @list.global_dot
-  attr (called) push_symbol = "list"
-}
-
 (list (_) @el) @list
 {
   edge @list.new_bindings -> @el.new_bindings
@@ -1245,7 +1432,10 @@ inherit .parent_module
   edge @tuple.new_bindings -> @element.new_bindings
 }
 
-(parenthesized_expression) {}
+(parenthesized_expression (_) @inner) @paren
+{
+  edge @paren.output -> @inner.output
+}
 
 (generator_expression) {}
 
