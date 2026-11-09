@@ -197,10 +197,54 @@ fn builtin_module_constant() {
 }
 
 #[test]
-fn local_definition_of_builtin_name_still_resolves() {
-    // The rules give no precedence to a local definition over the builtins.
-    // The call resolves to the local definition and to the builtin.
-    // This test checks that the builtins do not hide the local definition.
+fn function_definition_shadows_builtin() {
     let targets = resolve("def len(x):\n    pass\n\ny = len(1)\n", "len");
-    assert!(targets.contains(&Target::Local(0)), "{:?}", targets);
+    assert_eq!(targets, vec![Target::Local(0)]);
+}
+
+#[test]
+fn class_definition_shadows_builtin() {
+    let targets = resolve("class dict:\n    pass\n\ny = dict()\n", "dict");
+    assert_eq!(targets, vec![Target::Local(0)]);
+}
+
+#[test]
+fn nested_definition_shadows_builtin() {
+    let source = "def f():\n    def len():\n        pass\n    return len\n";
+    assert_eq!(resolve(source, "len"), vec![Target::Local(1)]);
+}
+
+#[test]
+fn parameter_shadows_builtin() {
+    let source = "def f(id, *iter, type=1, **min):\n    return id, iter, type, min\n";
+    for name in ["id", "iter", "type", "min"] {
+        assert_eq!(resolve(source, name), vec![Target::Local(0)], "{}", name);
+    }
+}
+
+#[test]
+fn method_parameter_shadows_builtin() {
+    let source = "class A:\n    def m(self, id):\n        return id\n";
+    assert_eq!(resolve(source, "id"), vec![Target::Local(1)]);
+}
+
+#[test]
+fn lambda_parameter_shadows_builtin() {
+    let targets = resolve("f = lambda id: id\n", "id");
+    assert_eq!(targets, vec![Target::Local(0)]);
+}
+
+#[test]
+fn local_variable_shadows_builtin() {
+    let source = "def f():\n    id = 1\n    return id\n";
+    assert_eq!(resolve(source, "id"), vec![Target::Local(1)]);
+}
+
+#[test]
+fn conditional_binding_keeps_the_builtin() {
+    // The assignment may not run, so both the local variable and the builtin can be the target.
+    let source = "def f(a):\n    if a:\n        id = 1\n    return id\n";
+    let targets = resolve(source, "id");
+    assert_eq!(targets.len(), 2, "{:?}", targets);
+    assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
 }

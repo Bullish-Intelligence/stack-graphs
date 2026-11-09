@@ -5,7 +5,7 @@ no_params = lambda: y
 
 sorted([1, 2, 3], key=lambda y: x + y)
                       #         ^ defined: 1
-                      #             ^ defined: 1, 6
+                      #             ^ defined: 6
 
 def uses_default(fn=lambda: 1):
     fn()

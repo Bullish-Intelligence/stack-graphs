@@ -791,6 +791,8 @@ inherit .parent_module
 
   edge @func.call -> return_value
   edge @body.before_scope -> @params.after_scope
+  ; A parameter shadows a name from an outer scope.
+  attr (@body.before_scope -> @params.after_scope) precedence = 1
   edge @body.before_scope -> drop_scope
   edge drop_scope -> @func.bottom
   attr (drop_scope) type = "drop_scopes"
@@ -808,11 +810,19 @@ inherit .parent_module
   node @body.after_scope
 
   edge @lam.call -> return_value
-  edge @body.before_scope -> @body.after_scope
   edge @body.after_scope -> @lam.bottom
   attr (@lam.call) pop_scoped_symbol = "()"
   attr (return_value) is_exported
   let @lam.function_returns = return_value
+}
+
+; A lambda without parameters reaches the outer scope directly.
+; A lambda with parameters reaches it through the parameters, so that a parameter shadows it.
+(lambda
+  !parameters
+  body: (_) @body
+) {
+  edge @body.before_scope -> @body.after_scope
 }
 
 (lambda
@@ -831,6 +841,8 @@ inherit .parent_module
   attr (@name.def) node_definition = @name
   attr (@name.def) definiens_node = @func
   edge @func.after_scope -> @name.def
+  ; A function definition shadows an earlier binding of the same name.
+  attr (@func.after_scope -> @name.def) precedence = 1
   edge @name.def -> @func.call
 
   ; Prevent functions defined inside of method bodies from being treated like methods
@@ -866,6 +878,8 @@ inherit .parent_module
   attr (@param.param_index) push_symbol = (named-child-index @param)
   edge @param.param_index -> @params.before_scope
   edge @params.after_scope -> @param.input
+  ; A lambda body also connects to the outer scope from here. A parameter shadows that path.
+  attr (@params.after_scope -> @param.input) precedence = 1
   edge @param.param_name -> @params.before_scope
 }
 
@@ -939,6 +953,8 @@ inherit .parent_module
   attr (@name.def) definiens_node = @class
   attr (@name.def) syntax_type = "class"
   edge @class.after_scope -> @name.def
+  ; A class definition shadows an earlier binding of the same name.
+  attr (@class.after_scope -> @name.def) precedence = 1
   edge @name.def -> call
   edge @name.def -> members_dot
   edge members_dot -> @class.members
@@ -1047,6 +1063,8 @@ inherit .parent_module
 {
   edge @name.output -> @name.local_scope
   edge @name.output -> @name.class_parent_scope
+  ; A name in the local scope shadows a name in the scope around the class.
+  attr (@name.output -> @name.local_scope) precedence = 1
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
   attr (@name.output) node_reference = @name
@@ -1249,6 +1267,7 @@ inherit .parent_module
   attr (@name.def) node_definition = @name
   edge @pattern.output -> @pattern.local_scope
   edge @pattern.output -> @pattern.class_parent_scope
+  attr (@pattern.output -> @pattern.local_scope) precedence = 1
   edge @pattern.local_scope -> @pattern.input
   attr (@pattern.local_scope -> @pattern.input) precedence = 1
   attr (@pattern.input) node_definition = @name
