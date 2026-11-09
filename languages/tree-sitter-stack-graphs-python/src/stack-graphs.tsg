@@ -1396,6 +1396,33 @@ inherit .parent_module
   edge @list.new_bindings -> @el.new_bindings
 }
 
+;;;; Comprehension Scopes
+;;
+;; A comprehension has a scope of its own. The variables of its `for` clauses belong to that scope.
+;; They do not leak into the enclosing scope, and they shadow a variable of the same name outside.
+;; The expressions of the comprehension look up names in the comprehension scope first.
+
+[
+  (list_comprehension)
+  (set_comprehension)
+  (dictionary_comprehension)
+  (generator_expression)
+] @comp
+{
+  node @comp.comprehension_scope
+  edge @comp.comprehension_scope -> @comp.local_scope
+}
+
+[
+  (list_comprehension (_) @child)
+  (set_comprehension (_) @child)
+  (dictionary_comprehension (_) @child)
+  (generator_expression (_) @child)
+] @comp
+{
+  let @child.local_scope = @comp.comprehension_scope
+}
+
 (list_comprehension) {}
 
 (dictionary (pair) @pair) @dict

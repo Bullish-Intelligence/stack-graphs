@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An annotation with a dotted container, like `typing.List[Foo]`, follows the container.
 
+- A comprehension has a scope of its own. Its variables no longer share a symbol with a variable of the same name in the enclosing scope, and they no longer leak into that scope.
+
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
 ## v0.3.0 -- 2024-12-12
