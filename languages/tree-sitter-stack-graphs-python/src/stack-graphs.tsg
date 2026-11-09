@@ -1027,10 +1027,6 @@ inherit .parent_module
   edge @binop.new_bindings -> @right.new_bindings
 }
 
-(primary_expression/identifier) @name {
-  attr (@name.ref) node_reference = @name
-}
-
 (primary_expression/identifier) @name
 {
   edge @name.output -> @name.local_scope
