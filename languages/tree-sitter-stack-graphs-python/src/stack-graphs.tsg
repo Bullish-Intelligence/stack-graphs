@@ -2080,7 +2080,6 @@ inherit .type_param_scope
   (pattern/identifier) @name @pattern
   ; identifiers in patterns
   (as_pattern (identifier) @name .) @pattern
-  (keyword_pattern (identifier) @name) @pattern
   (splat_pattern (identifier) @name) @pattern
   ; every context where _simple_pattern is used, because matching
   ; pattern/dotted_name does not work
@@ -2161,6 +2160,80 @@ inherit .type_param_scope
 
   edge @as_pattern.new_bindings -> @value.new_bindings
   edge @as_pattern.new_bindings -> @name.new_bindings
+}
+
+;;;; Names in patterns
+;;
+;; A dotted name in a pattern is no capture when it has two names or more, or when it names the
+;; class of a class pattern. `case Color.RED:` and `case Point(x=0):` read the names `Color.RED` and
+;; `Point`. The first name resolves like a name in an expression. Each later name is a member of
+;; the name before it. A single name in a `case` is a capture: the rules above bind it.
+
+[
+  (class_pattern . (dotted_name . (identifier) @first))
+  (case_pattern (dotted_name . (identifier) @first . (identifier)))
+  (union_pattern (dotted_name . (identifier) @first . (identifier)))
+  (keyword_pattern (dotted_name . (identifier) @first . (identifier)))
+  (dict_pattern key: (dotted_name . (identifier) @first . (identifier)))
+]
+{
+  edge @first.output -> @first.local_scope
+  edge @first.output -> @first.class_parent_scope
+  attr (@first.output -> @first.local_scope) precedence = 2
+  attr (@first.output -> @first.class_parent_scope) precedence = 1
+  edge @first.output -> @first.declared_names
+  attr (@first.output -> @first.declared_names) precedence = 3
+  edge @first.output -> @first.type_param_scope
+  attr (@first.output -> @first.type_param_scope) precedence = 4
+  attr (@first.output) push_symbol = (source-text @first), source_node = @first, is_reference
+}
+
+[
+  (class_pattern . (dotted_name (identifier) @prev . (identifier) @name))
+  (case_pattern (dotted_name (identifier) @prev . (identifier) @name))
+  (union_pattern (dotted_name (identifier) @prev . (identifier) @name))
+  (keyword_pattern (dotted_name (identifier) @prev . (identifier) @name))
+  (dict_pattern key: (dotted_name (identifier) @prev . (identifier) @name))
+]
+{
+  node output_dot
+  attr (output_dot) push_symbol = "."
+  attr (@name.output) push_node = @name
+  attr (@name.output) is_reference
+  edge @name.output -> output_dot
+  edge output_dot -> @prev.output
+}
+
+[
+  (class_pattern . (dotted_name (identifier) . (identifier) @last .) @dotted)
+  (case_pattern (dotted_name (identifier) . (identifier) @last .) @dotted)
+  (union_pattern (dotted_name (identifier) . (identifier) @last .) @dotted)
+  (keyword_pattern (dotted_name (identifier) . (identifier) @last .) @dotted)
+  (dict_pattern key: (dotted_name (identifier) . (identifier) @last .) @dotted)
+]
+{
+  edge @dotted.output -> @last.output
+}
+
+;; A class pattern with a single name, `Point(...)`, outputs the name.
+
+(class_pattern . (dotted_name . (identifier) @last .) @dotted)
+{
+  edge @dotted.output -> @last.output
+}
+
+;; The name in `case Point(x=0):` is a member of the class `Point`, as the `x` in `Point.x` is.
+
+(class_pattern
+  . (dotted_name) @class
+  (case_pattern (keyword_pattern . (identifier) @name)))
+{
+  node output_dot
+  attr (output_dot) push_symbol = "."
+  attr (@name.output) push_node = @name
+  attr (@name.output) is_reference
+  edge @name.output -> output_dot
+  edge output_dot -> @class.output
 }
 
 (keyword_pattern) {}
