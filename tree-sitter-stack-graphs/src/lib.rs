@@ -453,6 +453,7 @@ pub struct StackGraphLanguage {
     tsg_path: PathBuf,
     tsg_source: std::borrow::Cow<'static, str>,
     functions: Functions,
+    debug_attributes: bool,
 }
 
 impl StackGraphLanguage {
@@ -469,6 +470,7 @@ impl StackGraphLanguage {
             tsg_path: PathBuf::from("<tsg>"),
             tsg_source: Cow::from(String::new()),
             functions: Self::default_functions(),
+            debug_attributes: true,
         }
     }
 
@@ -486,6 +488,7 @@ impl StackGraphLanguage {
             tsg_path: PathBuf::from("<missing tsg path>"),
             tsg_source: Cow::from(tsg_source.to_string()),
             functions: Self::default_functions(),
+            debug_attributes: true,
         })
     }
 
@@ -501,6 +504,13 @@ impl StackGraphLanguage {
         let mut sgl = Self::from_str(language, tsg_source)?;
         sgl.tsg_path = tsg_path;
         Ok(sgl)
+    }
+
+    /// Sets whether the builder adds the `tsg_location`, `tsg_variable`, and `tsg_match_node`
+    /// debug attributes to the nodes. The default is true. A caller that never reads the debug
+    /// information can turn them off to save time and memory.
+    pub fn set_debug_attributes(&mut self, enabled: bool) {
+        self.debug_attributes = enabled;
     }
 
     pub fn set_tsg_info(&mut self, path: PathBuf, source: Cow<'static, str>) {
@@ -660,9 +670,9 @@ impl<'a> Builder<'a> {
                 .expect("Failed to set FILE_PATH");
         }
 
-        let mut config = ExecutionConfig::new(&self.sgl.functions, &globals)
-            .lazy(true)
-            .debug_attributes(
+        let mut config = ExecutionConfig::new(&self.sgl.functions, &globals).lazy(true);
+        if self.sgl.debug_attributes {
+            config = config.debug_attributes(
                 [DEBUG_ATTR_PREFIX, "tsg_location"].concat().as_str().into(),
                 [DEBUG_ATTR_PREFIX, "tsg_variable"].concat().as_str().into(),
                 [DEBUG_ATTR_PREFIX, "tsg_match_node"]
@@ -670,6 +680,7 @@ impl<'a> Builder<'a> {
                     .as_str()
                     .into(),
             );
+        }
 
         // The execute_into() method requires that the reference to the tree matches the lifetime
         // parameter 'a of the Graph, because the Graph can hold references to the Tree. In this Builder,

@@ -332,25 +332,78 @@ where
 #[derive(Clone)]
 pub struct AppendingCycleDetector<H> {
     appendages: List<InternedOrHandle<H>>,
+    /// The start nodes of the appendages. A cycle needs an appendage whose start node is the end
+    /// node of the newest appendage. Without such a start node, the path has no cycle.
+    starts: StartNodes,
+}
+
+const BLOOM_WORDS: usize = 16;
+
+/// A Bloom filter of node indexes, with two bits for each key.
+#[derive(Clone)]
+struct StartNodes {
+    bits: [u64; BLOOM_WORDS],
+}
+
+impl StartNodes {
+    fn new() -> Self {
+        StartNodes {
+            bits: [0; BLOOM_WORDS],
+        }
+    }
+
+    #[inline(always)]
+    fn positions(key: u32) -> [(usize, u64); 2] {
+        let h = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let a = (h >> 40) as usize & (BLOOM_WORDS * 64 - 1);
+        let b = (h >> 20) as usize & (BLOOM_WORDS * 64 - 1);
+        [(a >> 6, 1u64 << (a & 63)), (b >> 6, 1u64 << (b & 63))]
+    }
+
+    fn insert(&mut self, key: u32) {
+        for (w, m) in Self::positions(key) {
+            self.bits[w] |= m;
+        }
+    }
+
+    fn contains(&self, key: u32) -> bool {
+        Self::positions(key)
+            .iter()
+            .all(|&(w, m)| self.bits[w] & m != 0)
+    }
+}
+
+#[inline(always)]
+fn node_key(node: Handle<Node>) -> u32 {
+    node.as_usize() as u32
 }
 
 impl<H> AppendingCycleDetector<H> {
     pub fn new() -> Self {
         Self {
             appendages: List::empty(),
+            starts: StartNodes::new(),
         }
     }
 
     pub fn from(appendables: &mut Appendables<H>, path: PartialPath) -> Self {
+        let start = path.start_node;
         let h = appendables.interned.add(path);
         let mut result = Self::new();
+        result.starts.insert(node_key(start));
         result
             .appendages
             .push_front(&mut appendables.elements, InternedOrHandle::Interned(h));
         result
     }
 
-    pub fn append(&mut self, appendables: &mut Appendables<H>, appendage: H) {
+    pub fn append(
+        &mut self,
+        appendables: &mut Appendables<H>,
+        appendage: H,
+        start: Handle<Node>,
+    ) {
+        self.starts.insert(node_key(start));
         self.appendages.push_front(
             &mut appendables.elements,
             InternedOrHandle::Database(appendage),
@@ -381,6 +434,9 @@ where
             Some(appendage) => appendage.end_node(db, &appendables.interned),
             None => return Ok(cycles),
         };
+        if !self.starts.contains(node_key(end_node)) {
+            return Ok(cycles);
+        }
 
         let mut maybe_cyclic_path = None;
         let mut remaining_appendages = self.appendages;

@@ -448,6 +448,29 @@ impl PartialSymbolStack {
         self.symbols.is_empty()
     }
 
+    /// Fills `out` with the symbols at the front of the stack after `skip` symbols.
+    /// An entry is `None` when the stack has no such symbol.
+    pub fn leading_symbols<const K: usize>(
+        self,
+        partials: &mut PartialPaths,
+        skip: usize,
+    ) -> [Option<Handle<Symbol>>; K] {
+        let mut out = [None; K];
+        let mut stack = self;
+        for _ in 0..skip {
+            if stack.pop_front(partials).is_none() {
+                return out;
+            }
+        }
+        for slot in out.iter_mut() {
+            match stack.pop_front(partials) {
+                Some(s) => *slot = Some(s.symbol),
+                None => break,
+            }
+        }
+        out
+    }
+
     /// Returns whether this partial symbol stack can _only_ match the empty symbol stack.
     #[inline(always)]
     pub fn can_only_match_empty(&self) -> bool {

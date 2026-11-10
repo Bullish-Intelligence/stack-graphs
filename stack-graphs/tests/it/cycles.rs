@@ -179,13 +179,13 @@ fn finding_simple_identity_cycle_is_detected() {
             edge(foo_ref, s, 0),
             edge(s, foo_def, 0),
         ] {
-            cd.append(&mut edges, *edge);
+            cd.append(&mut edges, *edge, edge.source);
             assert!(cd
                 .is_cyclic(&graph, &mut partials, db, &mut edges)
                 .unwrap()
                 .is_empty());
         }
-        cd.append(&mut edges, edge(foo_def, r, 0));
+        cd.append(&mut edges, edge(foo_def, r, 0), foo_def);
         assert_eq!(
             enum_set![Cyclicity::StrengthensPostcondition],
             cd.is_cyclic(&graph, &mut partials, db, &mut edges).unwrap()
@@ -231,7 +231,7 @@ fn stitching_simple_identity_cycle_is_detected() {
         let mut paths = Appendables::new();
         let mut cd: AppendingCycleDetector<Handle<PartialPath>> =
             AppendingCycleDetector::from(&mut paths, db[p0].clone());
-        cd.append(&mut paths, p1.into());
+        cd.append(&mut paths, p1.into(), db[p1].start_node);
         assert_eq!(
             enum_set![Cyclicity::StrengthensPostcondition],
             cd.is_cyclic(&graph, &mut partials, &mut db, &mut paths)
@@ -273,13 +273,13 @@ fn finding_composite_identity_cycle_is_detected() {
             edge(s, foo_def, 0),
             edge(foo_def, bar_ref, 0),
         ] {
-            cd.append(&mut edges, *edge);
+            cd.append(&mut edges, *edge, edge.source);
             assert!(cd
                 .is_cyclic(&graph, &mut partials, db, &mut edges)
                 .unwrap()
                 .is_empty());
         }
-        cd.append(&mut edges, edge(bar_ref, s, 0));
+        cd.append(&mut edges, edge(bar_ref, s, 0), bar_ref);
         assert_eq!(
             enum_set![Cyclicity::StrengthensPostcondition],
             cd.is_cyclic(&graph, &mut partials, db, &mut edges).unwrap()
@@ -328,7 +328,7 @@ fn stitching_composite_identity_cycle_is_detected() {
         let mut paths = Appendables::new();
         let mut cd: AppendingCycleDetector<Handle<PartialPath>> =
             AppendingCycleDetector::from(&mut paths, db[p0].clone());
-        cd.append(&mut paths, p1.into());
+        cd.append(&mut paths, p1.into(), db[p1].start_node);
         assert_eq!(
             enum_set![Cyclicity::StrengthensPostcondition],
             cd.is_cyclic(&graph, &mut partials, &mut db, &mut paths)

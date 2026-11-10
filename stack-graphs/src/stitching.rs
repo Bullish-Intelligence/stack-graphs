@@ -71,6 +71,9 @@ use crate::stats::FrequencyDistribution;
 use crate::CancellationError;
 use crate::CancellationFlag;
 
+/// How many leading symbols the quick join test compares.
+pub const JOIN_SYMBOLS: usize = 4;
+
 //-------------------------------------------------------------------------------------------------
 // Appendable
 
@@ -87,6 +90,15 @@ pub trait Appendable {
 
     /// Return the start node.
     fn start_node(&self) -> Handle<Node>;
+
+    /// The symbol at the front of the symbol stack precondition, when the appendable has one.
+    fn precondition_leading_symbols(
+        &self,
+        _partials: &mut PartialPaths,
+        _skip: usize,
+    ) -> [Option<Handle<Symbol>>; JOIN_SYMBOLS] {
+        [None; JOIN_SYMBOLS]
+    }
 
     /// Return the end node.
     fn end_node(&self) -> Handle<Node>;
@@ -146,6 +158,14 @@ impl Appendable for PartialPath {
 
     fn start_node(&self) -> Handle<Node> {
         self.start_node
+    }
+
+    fn precondition_leading_symbols(
+        &self,
+        partials: &mut PartialPaths,
+        skip: usize,
+    ) -> [Option<Handle<Symbol>>; JOIN_SYMBOLS] {
+        self.symbol_stack_precondition.leading_symbols(partials, skip)
     }
 
     fn end_node(&self) -> Handle<Node> {
@@ -1131,8 +1151,40 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
         let candidate_count = self.candidates.len();
         self.extensions.clear();
         self.extensions.reserve(candidate_count);
+        // The unification of the join node fails when the first symbols differ. The push and
+        // pop nodes half-open the stacks first, so they shift the position of the first symbol.
+        let (join_symbols, rhs_index) = match graph[partial_path.end_node] {
+            Node::Scope(_) | Node::DropScopes(_) => (
+                partial_path
+                    .symbol_stack_postcondition
+                    .leading_symbols::<JOIN_SYMBOLS>(partials, 0),
+                0,
+            ),
+            Node::PushSymbol(_) | Node::PushScopedSymbol(_) => (
+                partial_path
+                    .symbol_stack_postcondition
+                    .leading_symbols::<JOIN_SYMBOLS>(partials, 1),
+                0,
+            ),
+            Node::PopSymbol(_) | Node::PopScopedSymbol(_) => (
+                partial_path.symbol_stack_postcondition.leading_symbols::<JOIN_SYMBOLS>(partials, 0),
+                1,
+            ),
+            _ => ([None; JOIN_SYMBOLS], 0),
+        };
+        let join_known = join_symbols[0].is_some();
         for candidate in &self.candidates {
             let appendable = db.get_appendable(candidate);
+            if join_known {
+                let other = appendable.precondition_leading_symbols(partials, rhs_index);
+                let clash = join_symbols
+                    .iter()
+                    .zip(other.iter())
+                    .any(|(l, r)| matches!((l, r), (Some(l), Some(r)) if l != r));
+                if clash {
+                    continue;
+                }
+            }
             copious_debugging!("      with {}", appendable.display(graph, partials));
 
             let mut new_partial_path = partial_path.clone();
@@ -1146,7 +1198,11 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
                     continue;
                 }
             }
-            new_cycle_detector.append(&mut self.appended_paths, candidate.clone());
+            new_cycle_detector.append(
+                &mut self.appended_paths,
+                candidate.clone(),
+                appendable.start_node(),
+            );
             copious_debugging!("        is {}", new_partial_path.display(graph, partials));
             self.extensions.push((new_partial_path, new_cycle_detector));
         }
