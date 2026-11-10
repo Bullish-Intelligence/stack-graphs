@@ -1121,11 +1121,23 @@ inherit .type_param_scope
       name: (identifier) @name)))
 {
   node reference
-  node marker
+  node @name.kw_marker
   attr (reference) node_reference = @name
-  attr (marker) push_symbol = "<kw>"
-  edge reference -> marker
-  edge marker -> @fn.output
+  attr (@name.kw_marker) push_symbol = "<kw>"
+  edge reference -> @name.kw_marker
+  edge @name.kw_marker -> @fn.output
+}
+
+; A call of a generic class, `C[T](name=v)`, calls the class `C`. The subscript has no output of
+; its own, so the marker goes to the value of the subscript.
+(call
+  function: (subscript
+    value: (_) @value)
+  arguments: (argument_list
+    (keyword_argument
+      name: (identifier) @name)))
+{
+  edge @name.kw_marker -> @value.output
 }
 
 ; method definition
@@ -1280,7 +1292,13 @@ inherit .type_param_scope
   node @class.member_attrs
   node @class.members
   node @class.super_scope
+  node @class.kw_super_scope
   node @class.init_fields
+  node @class.init_fields_public
+  node @class.model_scope
+  node @class.model_pop
+  node @class.model_pop_up
+  node @class.model_up
 }
 
 (class_definition
@@ -1392,6 +1410,22 @@ inherit .type_param_scope
   edge @class.super_scope -> @superclass.output
 }
 
+; The keyword paths and the model questions reach the base classes through the keyword super
+; scope. It leads to the super scope. A generic base class, `class B(A[T])`, is the class `A`, but
+; only for these paths. A lookup of a member does not follow it: the work of the lookups would grow.
+(class_definition) @class
+{
+  edge @class.kw_super_scope -> @class.super_scope
+}
+
+(class_definition
+  superclasses: (argument_list
+    (subscript
+      value: (_) @value))) @class
+{
+  edge @class.kw_super_scope -> @value.output
+}
+
 ;;;; Synthesized `__init__`
 ;;
 ;; A `@dataclass` class and a `NamedTuple` class get an `__init__` that takes the fields of the
@@ -1409,8 +1443,8 @@ inherit .type_param_scope
       (assignment
         left: (identifier) @name
         type: (_) @_type) @_assignment))
-  (#not-match? @_type "ClassVar")
-  (#not-match? @_assignment "init\\s*=\\s*False")) @class
+  (#not-match? @_type "ClassVar|KW_ONLY")
+  (#not-match? @_assignment "init\\s*=\\s*False|PrivateAttr")) @class
 {
   edge @class.init_fields -> @name.input
 }
@@ -1419,7 +1453,7 @@ inherit .type_param_scope
   (decorator) @_decorator
   definition: (class_definition
     body: (block) @_body) @class
-  (#match? @_decorator "^@\\s*(dataclasses\\s*\\.\\s*)?dataclass\\b\\s*(\\(|$)")
+  (#match? @_decorator "^@\\s*((dataclasses|pydantic\\s*\\.\\s*dataclasses)\\s*\\.\\s*)?(dataclass|pydantic_dataclass)\\b\\s*(\\(|$)|^@\\s*(dataclasses\\s*\\.\\s*)?dataclass\\b\\s*(\\(|$)|^@\\s*(attrs?\\s*\\.\\s*)?(define|frozen|mutable)\\b\\s*(\\(|$)|^@\\s*attrs?\\s*\\.\\s*(s|attrs|attributes)\\b\\s*(\\(|$)")
   (#not-match? @_body "def\\s+__init__\\s*\\("))
 {
   edge @class.cls_keyword_pop -> @class.init_fields
@@ -1434,6 +1468,114 @@ inherit .type_param_scope
   attr (@class.cls_keyword_pop -> @class.init_fields) precedence = 1
 }
 
+;;;; Model classes and TypedDict
+;;
+;; A class with a base that `dataclass_transform` marks gets a synthesized `__init__` as well. The
+;; well-known bases are `pydantic.BaseModel`, `pydantic_settings.BaseSettings`, and
+;; `sqlmodel.SQLModel`. A `TypedDict` class takes its fields as keyword arguments too. The rules
+;; read the base by its text. A class with a base class of this kind is a model class. So is a
+;; class that derives from a model class in the project, through any number of bases. A class that
+;; the decorator `dataclass_transform` marks makes each class that derives from it a model class.
+;; The class itself is no model class.
+;;
+;; A model class takes the fields of the class and of its model base classes. A field with a
+;; leading underscore is a private attribute, and a `PrivateAttr` is no field. The alias of a field
+;; is out of scope: the name in `Field(alias=...)` is no keyword.
+;;
+;; A model class that derives from a class in the project cannot tell by its text that the base
+;; class is a model class. The class asks. The keyword path pushes the marker "<model>", with the
+;; scope that reaches the fields of the class. The marker goes to the base classes. A base class
+;; that is a root pops the marker and jumps to the scope. A base class that is no root pushes the
+;; marker "<model-up>" to its own base classes. The scope stays on the scope stack.
+
+(class_definition
+  name: (identifier) @name) @class
+{
+  attr (@class.model_pop) pop_scoped_symbol = "<model>"
+  attr (@class.model_pop_up) pop_symbol = "<model-up>"
+  attr (@class.model_up) push_symbol = "<model-up>"
+  edge @name.def -> @class.model_pop
+  edge @name.def -> @class.model_pop_up
+  edge @class.model_up -> @class.kw_super_scope
+}
+
+; A class with base classes can derive from a root: pass the question on to the base classes.
+(class_definition
+  superclasses: (argument_list)) @class
+{
+  edge @class.model_pop -> @class.model_up
+  edge @class.model_pop_up -> @class.model_up
+}
+
+; A root: the base is `BaseModel`, `BaseSettings`, `SQLModel`, or `TypedDict`.
+(class_definition
+  superclasses: (argument_list) @_bases
+  (#match? @_bases "(^|[(,.\\s])(BaseModel|BaseSettings|SQLModel|TypedDict)\\s*($|[,)\\[])")) @class
+{
+  edge @class.model_pop -> JUMP_TO_SCOPE_NODE
+  edge @class.model_pop_up -> JUMP_TO_SCOPE_NODE
+}
+
+; A root: the decorator `dataclass_transform` marks the class.
+(decorated_definition
+  (decorator) @_decorator
+  definition: (class_definition) @class
+  (#match? @_decorator "^@\\s*([A-Za-z_][A-Za-z_0-9]*\\s*\\.\\s*)*dataclass_transform\\b"))
+{
+  edge @class.model_pop -> JUMP_TO_SCOPE_NODE
+  edge @class.model_pop_up -> JUMP_TO_SCOPE_NODE
+}
+
+; The public fields: no leading underscore, and no `model_config`.
+(class_definition
+  body: (block
+    (expression_statement
+      (assignment
+        left: (identifier) @name
+        type: (_) @_type) @_assignment))
+  (#not-match? @_type "ClassVar|KW_ONLY")
+  (#not-match? @_assignment "init\\s*=\\s*False|PrivateAttr")
+  (#not-match? @name "^_|^model_config$")) @class
+{
+  edge @class.init_fields_public -> @name.input
+}
+
+; A model class with a root as a base takes the public fields.
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block) @_body
+  (#match? @_bases "(^|[(,.\\s])(BaseModel|BaseSettings|SQLModel)\\s*($|[,)\\[])")
+  (#not-match? @_body "def\\s+__init__\\s*\\(")) @class
+{
+  edge @class.cls_keyword_pop -> @class.init_fields_public
+  attr (@class.cls_keyword_pop -> @class.init_fields_public) precedence = 1
+}
+
+; A TypedDict class takes all fields.
+(class_definition
+  superclasses: (argument_list) @_bases
+  (#match? @_bases "(^|[(,.\\s])TypedDict\\s*($|[,)\\[])")) @class
+{
+  edge @class.cls_keyword_pop -> @class.init_fields
+  attr (@class.cls_keyword_pop -> @class.init_fields) precedence = 1
+}
+
+; A class with base classes that is no root asks its base classes.
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block) @_body
+  (#not-match? @_bases "(^|[(,.\\s])(BaseModel|BaseSettings|SQLModel|TypedDict|NamedTuple)\\s*($|[,)\\[])")
+  (#not-match? @_body "def\\s+__init__\\s*\\(")) @class
+{
+  node ask
+  attr (ask) push_scoped_symbol = "<model>", scope = @class.model_scope
+  attr (@class.model_scope) is_exported
+  edge @class.cls_keyword_pop -> ask
+  attr (@class.cls_keyword_pop -> ask) precedence = 1
+  edge ask -> @class.kw_super_scope
+  edge @class.model_scope -> @class.init_fields_public
+}
+
 ; A class with no `__init__` of its own uses the constructor of its base class. That constructor can
 ; be a synthesized `__init__`, so the keyword path goes on to the base class with the marker.
 (class_definition
@@ -1443,7 +1585,7 @@ inherit .type_param_scope
   node keyword_base
   attr (keyword_base) push_symbol = "<kw>"
   edge @class.cls_keyword_pop -> keyword_base
-  edge keyword_base -> @class.super_scope
+  edge keyword_base -> @class.kw_super_scope
 }
 
 (decorated_definition
