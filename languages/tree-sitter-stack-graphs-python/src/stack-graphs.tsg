@@ -243,6 +243,8 @@ inherit .class_member_attr_scope
 inherit .class_parent_scope
 inherit .class_self_scope
 inherit .class_super_scope
+inherit .declared_names
+inherit .enclosing_scope
 inherit .function_returns
 inherit .global
 inherit .global_dot
@@ -378,6 +380,8 @@ inherit .parent_module
   node @mod.class_super_scope
   node @mod.function_returns
   node @mod.local_scope
+  node @mod.declared_names
+  node @mod.enclosing_scope
 
   ;; the scope that a literal pushes with the "()" symbol of its class
   node @mod.literal_scope
@@ -802,9 +806,53 @@ inherit .parent_module
 
 (continue_statement) {}
 
-(global_statement) {}
+;;;; Global and nonlocal names
+;;
+;; `global x` in a function makes `x` a name of the module, and `nonlocal x` makes it a name of the
+;; enclosing function. An assignment to `x` in the function then binds that name, not a new local.
+;; Each function has a scope of declared names. A reference in the function looks there first,
+;; with a precedence above all other scopes. The scope pops the name and looks it up again in the
+;; final bindings of the module, or in the scope of the enclosing function at its definition.
+;; The name in the statement is a reference to the same binding.
+;;
+;; The assignment in the function still makes a definition of a local. The rules cannot drop it,
+;; but no reference reaches it. An assignment in the same block as the statement is a reference
+;; too, so that its name also names the declared binding.
 
-(nonlocal_statement) {}
+[
+  (global_statement (identifier) @name) @stmt
+  (nonlocal_statement (identifier) @name) @stmt
+]
+{
+  node pop
+  node push
+  node reference
+  attr (pop) pop_symbol = (source-text @name)
+  attr (push) push_symbol = (source-text @name)
+  attr (reference) node_reference = @name
+  edge @stmt.declared_names -> pop
+  edge pop -> push
+  if (eq (node-type @stmt) "global_statement") {
+    edge push -> @stmt.bottom
+    edge reference -> @stmt.bottom
+  } else {
+    edge push -> @stmt.enclosing_scope
+    edge reference -> @stmt.enclosing_scope
+  }
+}
+
+(block
+  [
+    (global_statement (identifier) @_declared)
+    (nonlocal_statement (identifier) @_declared)
+  ]
+  (expression_statement (assignment left: (identifier) @name))
+  (#eq? @_declared @name))
+{
+  node reference
+  attr (reference) node_reference = @name
+  edge reference -> @name.declared_names
+}
 
 (exec_statement) {}
 
@@ -859,6 +907,9 @@ inherit .parent_module
   let @body.local_precedence = 1
   edge drop_scope -> @func.bottom
   attr (drop_scope) type = "drop_scopes"
+  ; The names that a `global` or `nonlocal` statement in the body declares.
+  node @body.declared_names
+  let @body.enclosing_scope = @func.local_scope
   attr (@func.call) pop_scoped_symbol = "()"
   edge @params.before_scope -> JUMP_TO_SCOPE_NODE
   attr (return_value) is_exported
@@ -932,7 +983,24 @@ inherit .parent_module
   node keyword_pop
   attr (keyword_pop) pop_symbol = "<kw>"
   edge @name.def -> keyword_pop
-  edge keyword_pop -> @params.after_scope
+  edge keyword_pop -> @params.keyword_scope
+}
+
+; A keyword argument names a parameter by its name. The parameters `*args` and `**kwargs` take
+; the arguments that no other parameter takes, so no keyword argument names them.
+(parameters) @params
+{
+  node @params.keyword_scope
+}
+
+[
+  (parameters (identifier) @name)
+  (parameters (default_parameter name: (identifier) @name))
+  (parameters (typed_parameter . (identifier) @name))
+  (parameters (typed_default_parameter name: (identifier) @name))
+] @params
+{
+  edge @params.keyword_scope -> @name.def
 }
 
 (call
@@ -1101,6 +1169,7 @@ inherit .parent_module
   node @class.member_attrs
   node @class.members
   node @class.super_scope
+  node @class.init_fields
 }
 
 (class_definition
@@ -1155,6 +1224,9 @@ inherit .parent_module
   attr (keyword_dot) push_symbol = "."
   edge @name.def -> keyword_pop
   edge keyword_pop -> keyword_push
+  ; An `__init__` that the class has or inherits wins over the fields of a synthesized
+  ; `__init__` (precedence 1) and over the constructor of a base class (precedence 0).
+  attr (keyword_pop -> keyword_push) precedence = 2
   edge keyword_push -> keyword_init
   edge keyword_init -> keyword_dot
   edge keyword_dot -> members_dot
@@ -1207,6 +1279,60 @@ inherit .parent_module
     (expression) @superclass)) @class
 {
   edge @class.super_scope -> @superclass.output
+}
+
+;;;; Synthesized `__init__`
+;;
+;; A `@dataclass` class and a `NamedTuple` class get an `__init__` that takes the fields of the
+;; class as parameters. So the name in `C(name=v)` names the field `name`. A field is a name with an
+;; annotation in the class body. A `ClassVar` and a field with `field(init=False)` are no
+;; parameters. The keyword path of the class pops the "<kw>" marker and looks the name up in the
+;; fields. A class that writes its own `__init__` gets no synthesized `__init__`.
+;;
+;; The rules read the decorator by its text: `dataclass` or `dataclasses.dataclass`, with or
+;; without arguments. They do not check that the name resolves to the `dataclasses` module.
+
+(class_definition
+  body: (block
+    (expression_statement
+      (assignment
+        left: (identifier) @name
+        type: (_) @_type) @_assignment))
+  (#not-match? @_type "ClassVar")
+  (#not-match? @_assignment "init\\s*=\\s*False")) @class
+{
+  edge @class.init_fields -> @name.input
+}
+
+(decorated_definition
+  (decorator) @_decorator
+  definition: (class_definition
+    body: (block) @_body) @class
+  (#match? @_decorator "^@\\s*(dataclasses\\s*\\.\\s*)?dataclass\\b\\s*(\\(|$)")
+  (#not-match? @_body "def\\s+__init__\\s*\\("))
+{
+  edge @class.cls_keyword_pop -> @class.init_fields
+  attr (@class.cls_keyword_pop -> @class.init_fields) precedence = 1
+}
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])")) @class
+{
+  edge @class.cls_keyword_pop -> @class.init_fields
+  attr (@class.cls_keyword_pop -> @class.init_fields) precedence = 1
+}
+
+; A class with no `__init__` of its own uses the constructor of its base class. That constructor can
+; be a synthesized `__init__`, so the keyword path goes on to the base class with the marker.
+(class_definition
+  body: (block) @_body
+  (#not-match? @_body "def\\s+__init__\\s*\\(")) @class
+{
+  node keyword_base
+  attr (keyword_base) push_symbol = "<kw>"
+  edge @class.cls_keyword_pop -> keyword_base
+  edge keyword_base -> @class.super_scope
 }
 
 (decorated_definition
@@ -1281,6 +1407,9 @@ inherit .parent_module
   ; final bindings of the module, which an annotation can reach as a forward reference.
   attr (@name.output -> @name.local_scope) precedence = 2
   attr (@name.output -> @name.class_parent_scope) precedence = 1
+  ; A name that `global` or `nonlocal` declares wins over every other binding.
+  edge @name.output -> @name.declared_names
+  attr (@name.output -> @name.declared_names) precedence = 3
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
   attr (@name.output) node_reference = @name
