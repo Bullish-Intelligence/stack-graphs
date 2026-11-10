@@ -248,10 +248,12 @@ inherit .enclosing_scope
 inherit .function_returns
 inherit .global
 inherit .global_dot
-inherit .grandparent_module
+inherit .relative_entry
+inherit .binding_scope
+inherit .declaration
 inherit .literal_scope
 inherit .local_scope
-inherit .parent_module
+inherit .type_param_scope
 
 ;;
 ;; #     #
@@ -276,11 +278,11 @@ inherit .parent_module
 
   var module_ref = mod_file_ref
 
-  node parent_module_ref_node
-  var parent_module_ref = parent_module_ref_node
-
-  node grandparent_module_ref_node
-  var grandparent_module_ref = grandparent_module_ref_node
+  ; The relative imports climb through the packages that hold the file. See "Relative Imports".
+  ; The node `up_n` for the package at depth n pops one "<up>" marker, then leads to `up_n-1` and to
+  ; the references of the package at depth n. The depth 0 node has no pop.
+  node up_dead_end
+  var up_node = up_dead_end
 
   ; get the file path relative to the root path
   let rel_path = (replace FILE_PATH ROOT_PATH "")
@@ -308,8 +310,14 @@ inherit .parent_module
       ;
       attr (module_ref) push_symbol = $1
       ;
-      set grandparent_module_ref = parent_module_ref
-      set parent_module_ref = module_ref
+      ; `module_ref` is the reference to the package of the first (i - 1) directories.
+      node up_next
+      edge up_next -> module_ref
+      node up_pop
+      attr (up_pop) pop_symbol = "<up>"
+      edge up_next -> up_pop
+      edge up_pop -> up_node
+      set up_node = up_next
       set module_ref = next_ref
     }
 
@@ -363,8 +371,13 @@ inherit .parent_module
   edge global_dot -> global
   attr (global_dot) push_symbol = "."
 
-  let @mod.parent_module = parent_module_ref
-  let @mod.grandparent_module = grandparent_module_ref
+  ; The entry of a relative import. It pops one marker for each dot of the import.
+  node up_entry
+  node up_entry_pop
+  attr (up_entry_pop) pop_symbol = "<up>"
+  edge up_entry -> up_entry_pop
+  edge up_entry_pop -> up_node
+  let @mod.relative_entry = up_entry
   let @mod.bottom = @mod.after_scope
   ; The final bindings of the module shadow the bindings that precede a top-level function.
   let @mod.bottom_precedence = 1
@@ -380,7 +393,10 @@ inherit .parent_module
   node @mod.class_super_scope
   node @mod.function_returns
   node @mod.local_scope
+  node @mod.binding_scope
   node @mod.declared_names
+  node @mod.type_param_scope
+  let @mod.declaration = #false
   node @mod.enclosing_scope
 
   ;; the scope that a literal pushes with the "()" symbol of its class
@@ -541,14 +557,23 @@ inherit .parent_module
 ;;
 ;; Relative imports are resolved in scopes related to the current module
 
-;; . imports resolve in parent module scope
-(import_from_statement module_name: (relative_import (import_prefix) @prefix (#eq? @prefix ".")) @relative) {
-  edge @relative.before_scope -> @prefix.parent_module
-}
-
-;; .. imports resolve in grandparent module scope
-(import_from_statement module_name: (relative_import (import_prefix) @prefix (#eq? @prefix "..")) @relative) {
-  edge @relative.before_scope -> @prefix.grandparent_module
+;; A relative import with N dots starts in the Nth package above the file. A `.` names the package
+;; of the file, and each further dot goes one package up. The import pushes one "<up>" marker for
+;; each dot, then goes to the entry of the module. The module pops one marker at each level and
+;; stops at the package that the markers name. An import that climbs above the root has too many
+;; markers, so it does not resolve.
+(import_from_statement module_name: (relative_import (import_prefix) @prefix) @relative) {
+  var up = @relative.before_scope
+  scan (source-text @prefix) {
+    "\\."
+    {
+      node push_up
+      attr (push_up) push_symbol = "<up>"
+      edge up -> push_up
+      set up = push_up
+    }
+  }
+  edge up -> @prefix.relative_entry
 }
 
 ;;;; Future Imports
@@ -710,6 +735,7 @@ inherit .parent_module
     edge @stmt.after_scope -> @stmt.before_scope
   }
   let @stmt.local_scope = @stmt.before_scope
+  let @stmt.binding_scope = @stmt.before_scope
 }
 
 ; An `if` statement without `else` keeps the edge.
@@ -760,6 +786,7 @@ inherit .parent_module
 (match_statement body: (_) @block) @stmt
 {
   let @block.local_scope = @block.before_scope
+  let @block.binding_scope = @block.before_scope
   edge @block.before_scope -> @stmt.before_scope
   edge @stmt.after_scope -> @block.after_scope
 }
@@ -856,7 +883,91 @@ inherit .parent_module
 
 (exec_statement) {}
 
+;;;; Type parameters and type aliases
+;;
+;; The type parameters of a class, a function, or a type alias, as in `class C[T: Base]`, belong to
+;; a scope of their own. The scope covers the whole definition: the parameters, the annotations, the
+;; base classes, and the body. It does not cover the decorators. A reference to a type parameter
+;; resolves in that scope before every other scope, so a module level `T` stays out.
+;;
+;; (_).type_param_scope  the scope of the type parameters around a node
+;; (_).declaration       true at the declaration of a type parameter or of a type alias
+
 (type_alias_statement) {}
+
+[
+  (function_definition type_parameters: (type_parameter))
+  (class_definition type_parameters: (type_parameter))
+  (type_alias_statement . (type (generic_type (type_parameter))))
+] @owner
+{
+  node @owner.tp_scope
+  ; A type parameter is visible in the definitions inside the definition that has it.
+  edge @owner.tp_scope -> @owner.type_param_scope
+}
+
+[
+  (function_definition type_parameters: (type_parameter) (_) @child)
+  (class_definition type_parameters: (type_parameter) (_) @child)
+  (type_alias_statement . (type (generic_type (type_parameter))) (_) @child)
+] @owner
+{
+  let @child.type_param_scope = @owner.tp_scope
+}
+
+;; The names in the list are declarations. The bound of a name is an ordinary expression.
+[
+  (function_definition type_parameters: (type_parameter) @list)
+  (class_definition type_parameters: (type_parameter) @list)
+  (type_alias_statement . (type) @list)
+]
+{
+  let @list.declaration = #true
+}
+
+[
+  (function_definition type_parameters: (type_parameter (type (constrained_type (type) . (type) @bound))))
+  (class_definition type_parameters: (type_parameter (type (constrained_type (type) . (type) @bound))))
+  (type_alias_statement . (type (generic_type (type_parameter (type (constrained_type (type) . (type) @bound))))))
+]
+{
+  let @bound.declaration = #false
+}
+
+[
+  (function_definition type_parameters: (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ])) ) @owner
+  (class_definition type_parameters: (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ])) ) @owner
+  (type_alias_statement . (type (generic_type (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ]))))) @owner
+]
+{
+  attr (@name.def) node_definition = @name
+  edge @owner.tp_scope -> @name.def
+}
+
+;; `type Name = value` and `type Name[T] = value` define `Name` in the enclosing scope.
+(type_alias_statement
+  . (type [
+    (identifier) @name
+    (generic_type . (identifier) @name)
+  ])) @stmt
+{
+  attr (@name.def) node_definition = @name
+  attr (@name.def) definiens_node = @stmt
+  edge @stmt.after_scope -> @name.def
+  attr (@stmt.after_scope -> @name.def) precedence = 1
+}
 
 ;;;; Compound Statements
 
@@ -1376,6 +1487,7 @@ inherit .parent_module
   ;;      uniform treatment of lambdas and function definitions.
   node @body.before_scope
   let @body.local_scope = @body.before_scope
+  let @body.binding_scope = @body.before_scope
   edge @body.input -> @body.before_scope
 
   edge @lam.output -> @lam.call
@@ -1383,7 +1495,23 @@ inherit .parent_module
 
 (conditional_expression) {}
 
-(named_expression) {}
+;;;; Assignment expressions
+;;
+;; `name := value` binds `name` in the enclosing function, class, or module, as an assignment does.
+;; A comprehension has a scope of its own, but the name still belongs to the scope around it.
+;; The binding scope is the scope of the enclosing statement, so the comprehension scope does not
+;; hold the name.
+
+(named_expression
+  name: (identifier) @name
+  value: (_) @value) @named
+{
+  attr (@name.def) node_definition = @name
+  edge @named.binding_scope -> @name.def
+  attr (@named.binding_scope -> @name.def) precedence = 1
+  edge @name.def -> @value.output
+  edge @named.output -> @value.output
+}
 
 (as_pattern) {}
 
@@ -1410,9 +1538,13 @@ inherit .parent_module
   ; A name that `global` or `nonlocal` declares wins over every other binding.
   edge @name.output -> @name.declared_names
   attr (@name.output -> @name.declared_names) precedence = 3
+  ; A type parameter wins over every binding of the same name outside its definition.
+  edge @name.output -> @name.type_param_scope
+  attr (@name.output -> @name.type_param_scope) precedence = 4
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
-  attr (@name.output) node_reference = @name
+  ; The name of a type parameter or of a type alias at its declaration is a definition, no reference.
+  attr (@name.output) push_symbol = (source-text @name), source_node = @name, is_reference = (not @name.declaration)
 
   edge @name.new_bindings -> @name.def
 }
@@ -2214,12 +2346,14 @@ inherit .parent_module
     . (identifier) @head
     (#not-match? @head "^(Optional|ClassVar|Final|Annotated|Required|NotRequired|ReadOnly|Union)$"))) @type
 {
-  attr (@head.output) node_reference = @head
+  attr (@head.output) push_symbol = (source-text @head), source_node = @head, is_reference = (not @head.declaration)
   edge @head.output -> @head.local_scope
   attr (@head.output -> @head.local_scope) precedence = 2
   edge @head.output -> @head.class_parent_scope
   attr (@head.output -> @head.class_parent_scope) precedence = 1
   edge @head.output -> @head.bottom
+  edge @head.output -> @head.type_param_scope
+  attr (@head.output -> @head.type_param_scope) precedence = 4
   edge @type.annot -> @head.output
 }
 
