@@ -799,6 +799,16 @@ inherit .type_param_scope
   edge @stmt.before_scope -> @stmt.after_scope
 }
 
+; The `else` clause of a `try` statement runs after the whole body. It sees the names of the body.
+; The path through the body shadows the path to the bindings before the statement.
+(try_statement
+  (block) @body
+  (else_clause (block) @else))
+{
+  edge @else.before_scope -> @body.after_scope
+  attr (@else.before_scope -> @body.after_scope) precedence = 1
+}
+
 ;;
 ;;  #####
 ;; #     # #####   ##   ##### ###### #    # ###### #    # #####  ####
@@ -2081,6 +2091,8 @@ inherit .type_param_scope
   ; identifiers in patterns
   (as_pattern (identifier) @name .) @pattern
   (splat_pattern (identifier) @name) @pattern
+  ; the star target of an assignment or a loop: `*rest, last = value`
+  (pattern/list_splat_pattern (identifier) @name) @pattern
   ; every context where _simple_pattern is used, because matching
   ; pattern/dotted_name does not work
   (case_pattern (dotted_name . (_) @name .) @pattern)
@@ -2159,6 +2171,45 @@ inherit .type_param_scope
   attr (@name.input) is_definition
 
   edge @as_pattern.new_bindings -> @value.new_bindings
+  edge @as_pattern.new_bindings -> @name.new_bindings
+}
+
+;; The target of `with` can be a tuple or a list: `with f() as (a, b):`. The grammar reads it as an
+;; expression. Each name in it, also in a nested tuple or list and after a star, is a definition.
+;; No value flows into the names, as the element of the value is not known.
+
+(as_pattern
+  (expression)
+  alias: (as_pattern_target [
+    (tuple [
+      (identifier) @name
+      (list_splat (identifier) @name)
+      (tuple [
+        (identifier) @name
+        (list_splat (identifier) @name)
+      ])
+      (list [
+        (identifier) @name
+        (list_splat (identifier) @name)
+      ])
+    ])
+    (list [
+      (identifier) @name
+      (list_splat (identifier) @name)
+      (tuple [
+        (identifier) @name
+        (list_splat (identifier) @name)
+      ])
+      (list [
+        (identifier) @name
+        (list_splat (identifier) @name)
+      ])
+    ])
+  ])) @as_pattern
+{
+  attr (@name.local_scope -> @name.input) precedence = 1
+  attr (@name.input) is_definition
+
   edge @as_pattern.new_bindings -> @name.new_bindings
 }
 
