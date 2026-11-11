@@ -2411,8 +2411,8 @@ inherit .type_param_scope
 ;; (type).annot     node that leads to the classes that the annotation names
 ;;
 ;; An annotation follows a class name, a dotted class name, an optional type, a union type, a
-;; string that holds a class name, and the container of a generic type. It does not follow the
-;; element type of a generic type.
+;; string that holds a class name, and the container of a generic type. The element type of a
+;; container needs a marker; see "Element types of containers" below.
 
 (type) @type
 {
@@ -2671,6 +2671,397 @@ inherit .type_param_scope
   edge @type.annot -> @member.annot
 }
 
+;;;; Element types of containers
+;;
+;; A container annotation names the type of its elements, like `list[Foo]` or `dict[str, Foo]`.
+;; Two markers ask for an element. A `for` loop or a comprehension pushes "<elem>" before it looks
+;; up the iterable. A subscript, `xs[i]`, pushes "<val>" before it looks up the value. The marker
+;; sits below the "()" symbol of the instance. The annotation of the container pops the "()" symbol
+;; and the marker, and pushes the "()" symbol of the element type.
+;;
+;;   sequence, set, iterator: "<elem>" and "<val>" give the first type argument
+;;   tuple[T, ...]:           "<elem>" and "<val>" give T
+;;   mapping:                 "<elem>" gives the key type, "<val>" gives the value type
+;;
+;; A plain reference to the container has no marker, so it resolves as before. A container
+;; class of the project is no container here: the rules read the name of the annotation only.
+
+;; a sequence, a set, or an iterator, like list[Foo]: the element is the first type argument
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter . (type) @element)
+    (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView)$"))) @type
+{
+  node call
+  node drop
+  node elem
+  node val
+  node instance
+  attr (call) pop_scoped_symbol = "()"
+  attr (drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  attr (instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  edge @type.annot -> call
+  edge call -> drop
+  edge drop -> elem
+  edge drop -> val
+  edge elem -> instance
+  edge val -> instance
+  edge instance -> @element.annot
+}
+
+;; a tuple of any length, like tuple[Foo, ...]
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter . (type) @element . (type (ellipsis)) .)
+    (#match? @_head "^(tuple|Tuple)$"))) @type
+{
+  node call
+  node drop
+  node elem
+  node val
+  node instance
+  attr (call) pop_scoped_symbol = "()"
+  attr (drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  attr (instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  edge @type.annot -> call
+  edge call -> drop
+  edge drop -> elem
+  edge drop -> val
+  edge elem -> instance
+  edge val -> instance
+  edge instance -> @element.annot
+}
+
+;; a mapping, like dict[str, Foo]: the key type, then the value type
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter . (type) @key . (type) @value .)
+    (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$"))) @type
+{
+  node call
+  node @type.map_drop
+  node elem
+  node val
+  node @type.element_instance
+  node @type.value_instance
+  attr (call) pop_scoped_symbol = "()"
+  attr (@type.map_drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  attr (@type.element_instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  attr (@type.value_instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  edge @type.annot -> call
+  edge call -> @type.map_drop
+  edge @type.map_drop -> elem
+  edge @type.map_drop -> val
+  edge elem -> @type.element_instance
+  edge val -> @type.value_instance
+  edge @type.element_instance -> @key.annot
+  edge @type.value_instance -> @value.annot
+}
+
+;; a tuple with a type for each position, like tuple[Foo, Other]: the index of a tuple pattern,
+;; like the `a, b` in `for a, b in pairs`, gives the type at that position
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter)
+    (#match? @_head "^(tuple|Tuple)$"))) @type
+{
+  node call
+  node @type.tuple_drop
+  attr (call) pop_scoped_symbol = "()"
+  attr (@type.tuple_drop) type = "drop_scopes"
+  edge @type.annot -> call
+  edge call -> @type.tuple_drop
+}
+
+(type
+  (generic_type
+    . (identifier) @_head
+    . (type_parameter (type) @member)
+    (#match? @_head "^(tuple|Tuple)$"))) @type
+{
+  node index
+  node instance
+  attr (index) pop_symbol = (named-child-index @member)
+  attr (instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  edge @type.tuple_drop -> index
+  edge index -> instance
+  edge instance -> @member.annot
+}
+
+;; The same containers, written as an expression of subscript, like typing.List[Foo] or the
+;; argument of Optional[List[Foo]].
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  node @sub.element_instance
+  node @sub.value_instance
+  attr (@sub.element_instance) push_scoped_symbol = "()", scope = @sub.literal_scope
+  attr (@sub.value_instance) push_scoped_symbol = "()", scope = @sub.literal_scope
+}
+
+[
+  (subscript
+    value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+    (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView)$"))
+  (subscript
+    value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+    . subscript: (_) . subscript: (ellipsis) .
+    (#match? @_head "^(tuple|Tuple)$"))
+] @sub
+{
+  node call
+  node drop
+  node elem
+  node val
+  attr (call) pop_scoped_symbol = "()"
+  attr (drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  edge @sub.annot -> call
+  edge call -> drop
+  edge drop -> elem
+  edge drop -> val
+  edge elem -> @sub.element_instance
+  edge val -> @sub.element_instance
+}
+
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  node call
+  node @sub.map_drop
+  node elem
+  node val
+  attr (call) pop_scoped_symbol = "()"
+  attr (@sub.map_drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  edge @sub.annot -> call
+  edge call -> @sub.map_drop
+  edge @sub.map_drop -> elem
+  edge @sub.map_drop -> val
+  edge elem -> @sub.element_instance
+  edge val -> @sub.value_instance
+}
+
+;; The first argument of a container subscript is the element type: a name, or a nested type.
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: [(identifier) (attribute)] @element
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  edge @sub.element_instance -> @element.output
+}
+
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: [(subscript) (binary_operator)] @element
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  edge @sub.element_instance -> @element.annot
+}
+
+;; The second argument of a mapping subscript is the value type.
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: (_) . subscript: [(identifier) (attribute)] @value .
+  (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  edge @sub.value_instance -> @value.output
+}
+
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: (_) . subscript: [(subscript) (binary_operator)] @value .
+  (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  edge @sub.value_instance -> @value.annot
+}
+
+;; The methods of a mapping: `d.keys()`, `d.values()`, and `d.items()` give views that a loop can
+;; read. `d.get(k)`, `d.pop(k)`, and `d.setdefault(k, v)` give a value. The method pops the "."
+;; symbol, its name, and the "()" symbol of the call.
+[
+  (type
+    (generic_type
+      . (identifier) @_head
+      . (type_parameter . (type) . (type) .)
+      (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$"))) @map
+  (subscript
+    value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+    . subscript: (_) . subscript: (_) .
+    (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @map
+]
+{
+  node dot
+  attr (dot) pop_symbol = "."
+  edge @map.map_drop -> dot
+
+  node keys
+  node keys_call
+  node keys_drop
+  node keys_elem
+  attr (keys) pop_symbol = "keys"
+  attr (keys_call) pop_scoped_symbol = "()"
+  attr (keys_drop) type = "drop_scopes"
+  attr (keys_elem) pop_symbol = "<elem>"
+  edge dot -> keys
+  edge keys -> keys_call
+  edge keys_call -> keys_drop
+  edge keys_drop -> keys_elem
+  edge keys_elem -> @map.element_instance
+
+  node values
+  node values_call
+  node values_drop
+  node values_elem
+  attr (values) pop_symbol = "values"
+  attr (values_call) pop_scoped_symbol = "()"
+  attr (values_drop) type = "drop_scopes"
+  attr (values_elem) pop_symbol = "<elem>"
+  edge dot -> values
+  edge values -> values_call
+  edge values_call -> values_drop
+  edge values_drop -> values_elem
+  edge values_elem -> @map.value_instance
+
+  node items
+  node items_call
+  node items_drop
+  node items_elem
+  node items_key
+  node items_value
+  attr (items) pop_symbol = "items"
+  attr (items_call) pop_scoped_symbol = "()"
+  attr (items_drop) type = "drop_scopes"
+  attr (items_elem) pop_symbol = "<elem>"
+  attr (items_key) pop_symbol = "0"
+  attr (items_value) pop_symbol = "1"
+  edge dot -> items
+  edge items -> items_call
+  edge items_call -> items_drop
+  edge items_drop -> items_elem
+  edge items_elem -> items_key
+  edge items_elem -> items_value
+  edge items_key -> @map.element_instance
+  edge items_value -> @map.value_instance
+
+  node get
+  node pop
+  node setdefault
+  node get_call
+  node get_drop
+  attr (get) pop_symbol = "get"
+  attr (pop) pop_symbol = "pop"
+  attr (setdefault) pop_symbol = "setdefault"
+  attr (get_call) pop_scoped_symbol = "()"
+  attr (get_drop) type = "drop_scopes"
+  edge dot -> get
+  edge dot -> pop
+  edge dot -> setdefault
+  edge get -> get_call
+  edge pop -> get_call
+  edge setdefault -> get_call
+  edge get_call -> get_drop
+  edge get_drop -> @map.value_instance
+}
+
+;; Builtin functions that keep the elements of their argument: `sorted(xs)`, `reversed(xs)`,
+;; `list(xs)`, `tuple(xs)`, `set(xs)`, `frozenset(xs)`, and `iter(xs)`. The rules read the name of
+;; the function only.
+(call
+  function: (identifier) @_fn
+  arguments: (argument_list . (expression) @argument)
+  (#match? @_fn "^(sorted|reversed|list|tuple|set|frozenset|iter)$")) @call
+{
+  node elem
+  node val
+  node push_elem
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  attr (push_elem) push_symbol = "<elem>"
+  edge @call.output -> elem
+  edge @call.output -> val
+  edge elem -> push_elem
+  edge val -> push_elem
+  edge push_elem -> @argument.output
+}
+
+;; `enumerate(xs)` gives pairs of an index and an element of `xs`. `zip(xs, ys)` gives tuples of
+;; the elements of its arguments. A tuple pattern, like `i, x`, reads them by index.
+(call
+  function: (identifier) @_fn
+  arguments: (argument_list . (expression) @argument)
+  (#eq? @_fn "enumerate")) @call
+{
+  node elem
+  node index
+  node push_elem
+  attr (elem) pop_symbol = "<elem>"
+  attr (index) pop_symbol = "1"
+  attr (push_elem) push_symbol = "<elem>"
+  edge @call.output -> elem
+  edge elem -> index
+  edge index -> push_elem
+  edge push_elem -> @argument.output
+}
+
+(call
+  function: (identifier) @_fn
+  arguments: (argument_list (expression) @argument)
+  (#eq? @_fn "zip")) @call
+{
+  node elem
+  node index
+  node push_elem
+  attr (elem) pop_symbol = "<elem>"
+  attr (index) pop_symbol = (named-child-index @argument)
+  attr (push_elem) push_symbol = "<elem>"
+  edge @call.output -> elem
+  edge elem -> index
+  edge index -> push_elem
+  edge push_elem -> @argument.output
+}
+
+;; `for x in xs` and `[x for x in xs]` ask for an element of the iterable.
+[
+  (for_statement left: (_) @pattern right: (_) @iterable)
+  (for_in_clause left: (_) @pattern right: (_) @iterable)
+]
+{
+  node elem
+  attr (elem) push_symbol = "<elem>"
+  edge @pattern.input -> elem
+  edge elem -> @iterable.output
+}
+
+;; `xs[i]` asks for a value of the container. A slice, like `xs[1:]`, gives no value. Neither does
+;; a subscript with two indexes or more.
+(subscript
+  value: (_) @value
+  .
+  subscript: (_) @index .) @sub
+{
+  if (not (eq (node-type @index) "slice")) {
+    node val
+    attr (val) push_symbol = "<val>"
+    edge @sub.output -> val
+    edge val -> @value.output
+  }
+}
+
 ;;;; Annotated names
 ;;
 ;; The annotation of a parameter, a variable, or an attribute.
@@ -2698,7 +3089,7 @@ inherit .type_param_scope
 ;;;; Annotated splat parameters
 ;;
 ;; The annotation of `*args: T` describes each element, so `args` is a tuple. The annotation of
-;; `**kwargs: T` describes each value, so `kwargs` is a dict. The rules follow neither element type.
+;; `**kwargs: T` describes each value, so `kwargs` is a dict.
 
 (parameter/typed_parameter . (list_splat_pattern (identifier) @name))
 {
@@ -2720,6 +3111,33 @@ inherit .type_param_scope
   edge @name.def -> instance
   edge instance -> class
   edge class -> @name.global_dot
+}
+
+;; The elements of `*args: T` and the values of `**kwargs: T` have the type T.
+(parameter/typed_parameter . (list_splat_pattern (identifier) @name) type: (type) @type)
+{
+  node elem
+  node val
+  node instance
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  attr (instance) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.def -> elem
+  edge @name.def -> val
+  edge elem -> instance
+  edge val -> instance
+  edge instance -> @type.annot
+}
+
+(parameter/typed_parameter . (dictionary_splat_pattern (identifier) @name) type: (type) @type)
+{
+  node val
+  node instance
+  attr (val) pop_symbol = "<val>"
+  attr (instance) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.def -> val
+  edge val -> instance
+  edge instance -> @type.annot
 }
 
 ;;;; Return annotations
