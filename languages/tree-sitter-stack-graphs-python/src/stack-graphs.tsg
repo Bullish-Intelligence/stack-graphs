@@ -2733,3 +2733,209 @@ inherit .type_param_scope
   edge @func.function_returns -> instance
   edge instance -> @type.annot
 }
+
+;;;; isinstance narrowing
+;;
+;; Inside a block that `isinstance(x, C)` guards, the receiver `x` of `x.attr` behaves like an
+;; instance of `C`. The rules follow the written guard only. They infer no type.
+;;
+;; These guards narrow a block:
+;; - the body of `if isinstance(x, C):` and of `elif isinstance(x, C):`, also when the guard is
+;;   one of the first three operands of an `and` chain,
+;; - the right operand of `isinstance(x, C) and ...`,
+;; - the statements after `assert isinstance(x, C)` in the same block,
+;; - the statements after `if not isinstance(x, C):` in the same block, when its body ends with
+;;   `return`, `raise`, `continue`, or `break`, and it has no `else`.
+;;
+;; The subject is a name `x` or an attribute `a.b` of a name. The class is a name, a dotted name,
+;; or a tuple of them. Each class of a tuple gives a candidate.
+;;
+;; Each statement has a narrowing scope. The scope of a statement leads to the scope of the
+;; enclosing statement. A guard adds an edge from the scope of each narrowed statement. The edge
+;; pops the subject and pushes an instance of the class. A receiver looks in the narrowing scope
+;; with a precedence above all other scopes. So the narrowed class shadows the declared type when
+;; it has the member. When it does not have the member, the declared type still resolves it. The
+;; scope belongs to the statements, not to the flow of bindings, so no narrowing leaks out of the
+;; guarded statements. An inner guard shadows an outer guard.
+
+inherit .narrow_scope
+
+(module) @mod
+{
+  node @mod.narrow_scope
+}
+
+[
+  (module (_) @stmt)
+  (block (_) @stmt)
+] @parent
+{
+  node @stmt.narrow_scope
+  edge @stmt.narrow_scope -> @parent.narrow_scope
+}
+
+(attribute object: (identifier) @receiver)
+{
+  edge @receiver.output -> @receiver.narrow_scope
+  attr (@receiver.output -> @receiver.narrow_scope) precedence = 5
+}
+
+;; The guard pops the subject at `narrowing`, then reaches `narrowed`.
+
+;; Every `isinstance` call has these nodes, also with a comment in its argument list.
+
+(
+  (call
+    function: (identifier) @_isinstance) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node @call.narrowing
+  node @call.narrowed
+}
+
+(
+  (call
+    function: (identifier) @_isinstance
+    arguments: (argument_list . (identifier) @subject . (_) .)) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node pop
+  attr (pop) pop_symbol = (source-text @subject)
+  edge @call.narrowing -> pop
+  edge pop -> @call.narrowed
+}
+
+(
+  (call
+    function: (identifier) @_isinstance
+    arguments: (argument_list
+      . (attribute object: (identifier) @object attribute: (identifier) @name)
+      . (_) .)) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node pop_object
+  node pop_dot
+  node pop_name
+  attr (pop_object) pop_symbol = (source-text @object)
+  attr (pop_dot) pop_symbol = "."
+  attr (pop_name) pop_symbol = (source-text @name)
+  edge @call.narrowing -> pop_object
+  edge pop_object -> pop_dot
+  edge pop_dot -> pop_name
+  edge pop_name -> @call.narrowed
+}
+
+(
+  (call
+    function: (identifier) @_isinstance
+    arguments: (argument_list
+      . (_)
+      . [
+        (identifier) @class
+        (attribute) @class
+        (tuple [(identifier) (attribute)] @class)
+      ] .)) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node instance
+  attr (instance) push_scoped_symbol = "()", scope = @call.literal_scope
+  edge @call.narrowed -> instance
+  edge instance -> @class.output
+}
+
+;; The guards
+
+;; The right operand of `a and b` is narrowed by a guard in `a`.
+
+(boolean_operator operator: "and" right: (_) @right) @op
+{
+  node @right.narrow_scope
+  edge @right.narrow_scope -> @op.narrow_scope
+}
+
+(
+  [
+    (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and" right: (_) @right)
+    (boolean_operator
+      left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and")
+      operator: "and"
+      right: (_) @right)
+    (boolean_operator
+      left: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+      operator: "and"
+      right: (_) @right)
+  ]
+  (#eq? @_isinstance "isinstance")
+)
+{
+  edge @right.narrow_scope -> @call.narrowing
+  attr (@right.narrow_scope -> @call.narrowing) precedence = 1
+}
+
+(
+  [
+    (if_statement
+      condition: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and")
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (boolean_operator left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and") operator: "and")
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (boolean_operator left: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "and")
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and")
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (boolean_operator left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and") operator: "and")
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (boolean_operator left: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "and")
+      consequence: (block (_) @stmt))
+  ]
+  (#eq? @_isinstance "isinstance")
+)
+{
+  edge @stmt.narrow_scope -> @call.narrowing
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+}
+
+(
+  [
+    (module (assert_statement . (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) (_) @stmt)
+    (block (assert_statement . (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) (_) @stmt)
+    (module
+      (if_statement
+        condition: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+    (block
+      (if_statement
+        condition: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+  ]
+  (#eq? @_isinstance "isinstance")
+)
+{
+  edge @stmt.narrow_scope -> @call.narrowing
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+}
