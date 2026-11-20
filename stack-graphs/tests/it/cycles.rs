@@ -9,15 +9,23 @@ use enumset::enum_set;
 use stack_graphs::arena::Handle;
 use stack_graphs::cycles::Appendables;
 use stack_graphs::cycles::AppendingCycleDetector;
+use stack_graphs::graph::Degree;
+use stack_graphs::graph::Edge;
+use stack_graphs::graph::Node;
 use stack_graphs::graph::StackGraph;
 use stack_graphs::partial::Cyclicity;
 use stack_graphs::partial::PartialPath;
 use stack_graphs::partial::PartialPaths;
+use stack_graphs::paths::PathResolutionError;
+use stack_graphs::stitching::Appendable;
 use stack_graphs::stitching::Database;
+use stack_graphs::stitching::ForwardCandidates;
 use stack_graphs::stitching::ForwardPartialPathStitcher;
 use stack_graphs::stitching::GraphEdges;
 use stack_graphs::stitching::StitcherConfig;
+use stack_graphs::stitching::ToAppendable;
 use stack_graphs::CancelAfterDuration;
+use stack_graphs::CancellationError;
 use std::time::Duration;
 
 use crate::util::*;
@@ -363,4 +371,133 @@ fn appending_eliminating_cycle_terminates() {
         assert!(result.is_ok());
         assert_eq!(1, path_count);
     }
+}
+
+// ----------------------------------------------------------------------------
+// failing cycle test
+
+/// An edge that only extends a path with concrete stacks.  It fails on a path with stack
+/// variables in its precondition.
+///
+/// The stitcher extends the real path, which has no precondition variables.  The cycle test
+/// rebuilds a suspected cycle on a new path at the end node.  That path has initial stack
+/// variables, so the edge fails there.  The edges and partial paths of this crate never fail
+/// in this way.  The `Appendable` trait is public, so a user type can.
+#[derive(Clone)]
+struct ConcreteStacksEdge(Edge);
+
+impl Appendable for ConcreteStacksEdge {
+    fn append_to(
+        &self,
+        graph: &StackGraph,
+        partials: &mut PartialPaths,
+        path: &mut PartialPath,
+    ) -> Result<(), PathResolutionError> {
+        if path.symbol_stack_precondition.has_variable()
+            || path.scope_stack_precondition.has_variable()
+        {
+            return Err(PathResolutionError::ScopeStackUnsatisfied);
+        }
+        self.0.append_to(graph, partials, path)
+    }
+
+    fn start_node(&self) -> Handle<Node> {
+        self.0.source
+    }
+
+    fn end_node(&self) -> Handle<Node> {
+        self.0.sink
+    }
+
+    fn display<'a>(
+        &'a self,
+        graph: &'a StackGraph,
+        partials: &'a mut PartialPaths,
+    ) -> Box<dyn std::fmt::Display + 'a> {
+        self.0.display(graph, partials)
+    }
+}
+
+struct ConcreteStacksEdges;
+
+impl ToAppendable<ConcreteStacksEdge, ConcreteStacksEdge> for ConcreteStacksEdges {
+    fn get_appendable<'a>(&'a self, edge: &'a ConcreteStacksEdge) -> &'a ConcreteStacksEdge {
+        edge
+    }
+}
+
+struct ConcreteStacksCandidates<'a> {
+    graph: &'a StackGraph,
+    partials: &'a mut PartialPaths,
+    edges: ConcreteStacksEdges,
+}
+
+impl
+    ForwardCandidates<
+        ConcreteStacksEdge,
+        ConcreteStacksEdge,
+        ConcreteStacksEdges,
+        CancellationError,
+    > for ConcreteStacksCandidates<'_>
+{
+    fn get_forward_candidates<R>(&mut self, path: &PartialPath, result: &mut R)
+    where
+        R: std::iter::Extend<ConcreteStacksEdge>,
+    {
+        result.extend(
+            self.graph
+                .outgoing_edges(path.end_node)
+                .map(ConcreteStacksEdge),
+        );
+    }
+
+    fn get_joining_candidate_degree(&self, path: &PartialPath) -> Degree {
+        self.graph.incoming_edge_degree(path.end_node)
+    }
+
+    fn get_graph_partials_and_db(
+        &mut self,
+    ) -> (&StackGraph, &mut PartialPaths, &ConcreteStacksEdges) {
+        (self.graph, self.partials, &self.edges)
+    }
+}
+
+#[test]
+fn failing_cycle_test_discontinues_path() {
+    // The graph has a loop `s -> t -> s`, and an exit `s -> foo_def`.
+    //
+    //     foo_ref -> s -> foo_def
+    //                ^ \
+    //                 \ v
+    //                  t
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("test").unwrap();
+    let foo_ref = create_push_symbol_node(&mut graph, file, "foo", true);
+    let s = create_scope_node(&mut graph, file, false);
+    let t = create_scope_node(&mut graph, file, false);
+    let foo_def = create_pop_symbol_node(&mut graph, file, "foo", true);
+    for (source, sink) in [(foo_ref, s), (s, t), (t, s), (s, foo_def)] {
+        graph.add_edge(source, sink, 0);
+    }
+
+    let mut partials = PartialPaths::new();
+    let mut candidates = ConcreteStacksCandidates {
+        graph: &graph,
+        partials: &mut partials,
+        edges: ConcreteStacksEdges,
+    };
+
+    // The loop makes the stitcher test for a cycle at `s`.  That test fails, so the stitcher
+    // discontinues the path.  It must not panic.  The path through `foo_def` stays.
+    let mut results = Vec::new();
+    let cancellation_flag = CancelAfterDuration::new(TEST_TIMEOUT);
+    let result = ForwardPartialPathStitcher::find_all_complete_partial_paths(
+        &mut candidates,
+        std::iter::once(foo_ref),
+        StitcherConfig::default(),
+        &cancellation_flag,
+        |_, _, path| results.push((path.start_node, path.end_node, path.edges.len())),
+    );
+    assert!(result.is_ok());
+    assert_eq!(vec![(foo_ref, foo_def, 2)], results);
 }
