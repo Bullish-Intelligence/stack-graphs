@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A call of a function with a return annotation follows the annotation only, and no longer the `return` statements of the body. This holds when the annotation names a class. The body stays visible to the caller when the annotation names no class: `Self`, `Any`, `Type[...]`, a `TypeVar`, `ParamSpec`, or type alias that the same file binds, a type parameter of a `def` or `class`, and a string annotation. Before this change, the value of the body and the annotation both reached the caller, and the caller found members that the annotation does not name.
 
+- More `isinstance` guards narrow the type of a name:
+  - `assert isinstance(x, A) and isinstance(x, B)`, with either operand, for the statements after the assert.
+  - A condition in parentheses with `and`, in an `if` or an `elif`.
+  - A conditional expression: the value before `if`.
+  - `not isinstance(x, C) or ...`: the right operand, and the statements after an `if` of this condition when its body ends with `return`, `raise`, `continue`, or `break`.
+
+- A string annotation that holds one plain name, such as `-> "Foo"` or `-> "mod.Foo"`, follows the annotation only, as a bare class name does. Before this change, the body stayed visible for every string. A string that holds more than a plain name, such as `"Foo | None"`, keeps the body.
+
+- The annotation gate for a type alias accepts a name that ends in `TypeAlias`, such as `_TypeAlias`. A function that returns such an alias keeps its body visible.
+
+- The reference at an attribute store, such as `o.x = x`, has the syntax type `store`. The path stitcher then keeps one more similar path for it. Before this change, the route of the return annotation could be lost when the field has the same name on both sides of the store. This restores the members that the previous change to return annotations had lost.
+
 - The language builds graphs with contraction on. See `StackGraphLanguage::set_contract_graph` in `tree-sitter-stack-graphs`. The graphs are smaller, and the results do not change in the tests.
 
 ## v0.3.0 -- 2024-12-12

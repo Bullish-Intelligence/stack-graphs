@@ -150,8 +150,8 @@ class Box[V]:
 Box().get().method
 #           ^ defined: 6
 
-# A string annotation keeps the value following next to the annotation. A store like `o.x = x`
-# after `o = self.copy()` needs the route of the body to reach the member `x`.
+# A string with one plain name follows the annotation only. A string with more keeps the body.
+# A store like `o.x = x` after `o = self.copy()` still reaches the member `x` by the annotation.
 class Options:
     min_width: int
     height: int
@@ -200,4 +200,4 @@ def plain_string_names_a_class() -> "Options":
 plain_string_names_a_class().min_width
 #                            ^ defined: 156
 plain_string_names_a_class().other_method
-#                            ^ defined: 10
+#                            ^ defined:

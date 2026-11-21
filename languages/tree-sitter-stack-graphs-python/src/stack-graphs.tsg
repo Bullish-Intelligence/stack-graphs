@@ -411,12 +411,13 @@ inherit .type_param_scope
 ;; annotation names a class. It does not work when the annotation names no class. These
 ;; annotations name no class:
 ;; - `Self`, `Any`, and `Type[...]` or `type[...]`,
-;; - a string, like `-> "Foo"`, `-> "mod.Foo"`, or `-> Optional["Foo"]`. The rules resolve a string
-;;   that holds one plain name like the bare name, and the function keeps the route of the body
-;;   too. A store like `o.x = x` after `o = self.copy()` lets a path through the store shadow the
-;;   short route of the annotation, and the route of the body then finds the member `x`. This
-;;   shadowing also happens for a bare class name. The rules keep the body for every string,
-;;   to keep the targets that only the body finds,
+;; - a string that holds more than a plain name, like `-> "Foo | None"` or
+;;   `-> "typing.Optional[Foo]"`. The rules resolve a string that holds one plain name, as
+;;   `-> "Foo"`, `-> "mod.Foo"`, or `-> Optional["Foo"]`, like the bare name, so such a string
+;;   follows the annotation only, as a bare class name does. A store like `o.x = x` after
+;;   `o = self.copy()` has the name of the field on both sides. The stitcher keeps one more
+;;   similar path for the reference at such a store, so the annotation route survives. See
+;;   `add_path_shadow_aware`,
 ;; - a name that the file binds with `TypeVar(...)`, `ParamSpec(...)`, `TypeVarTuple(...)`, or
 ;;   `TypeAliasType(...)`,
 ;; - a type parameter of a `def` or a `class`: `def first[T](...) -> T`,
@@ -437,7 +438,7 @@ inherit .type_param_scope
     {
       set names = (format "{}|{}" names $1)
     }
-    "\n[ \\t]*(\\w+)[ \\t]*:[ \\t]*[\"']?(?:\\w+\\.)*TypeAlias\\b"
+    "\n[ \\t]*(\\w+)[ \\t]*:[ \\t]*[\"']?(?:\\w+\\.)*\\w*TypeAlias\\b"
     {
       set names = (format "{}|{}" names $1)
     }
@@ -463,7 +464,7 @@ inherit .type_param_scope
     }
   }
   ; A pattern that matches a whole annotation when a word of the annotation names no class.
-  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"']).*$" names)
+  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"'][^\"']*[^\\w.\"'][^\"']*[\"']).*$" names)
 }
 
 ;;
@@ -2192,6 +2193,8 @@ inherit .type_param_scope
   ; The name of an assignment target is also a reference. It resolves through the object, as the
   ; name in a read of the attribute does.
   attr (@name.output) is_reference
+  ; The stitcher keeps one more similar path for this reference. See `add_path_shadow_aware`.
+  attr (@name.output) syntax_type = "store"
 }
 
 
@@ -3445,4 +3448,106 @@ inherit .narrow_scope
 {
   edge @stmt.narrow_scope -> @call.narrowing
   attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+}
+
+;; More guards. These forms narrow like the guards above.
+;; - `assert isinstance(x, A) and isinstance(x, B)`: the statements after the assert,
+;; - a condition in parentheses: `if (isinstance(x, C) and ...):`,
+;; - `isinstance(x, C)` as the condition of a conditional expression: the value before `if`,
+;; - `not isinstance(x, C) or ...`: the right operand, and the statements after an `if` of this
+;;   condition, when its body ends with `return`, `raise`, `continue`, or `break`.
+
+(boolean_operator operator: "or" right: (_) @right) @op
+{
+  node @right.narrow_scope
+  edge @right.narrow_scope -> @op.narrow_scope
+}
+
+(
+  [
+    (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or" right: (_) @right)
+    (boolean_operator
+      left: (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or")
+      operator: "or"
+      right: (_) @right)
+  ]
+  (#eq? @_isinstance "isinstance")
+)
+{
+  edge @right.narrow_scope -> @call.narrowing
+  attr (@right.narrow_scope -> @call.narrowing) precedence = 1
+}
+
+(
+  [
+    (module (assert_statement . (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and")) (_) @stmt)
+    (module (assert_statement . (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)) (_) @stmt)
+    (module (assert_statement . (boolean_operator left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and") operator: "and")) (_) @stmt)
+    (block (assert_statement . (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and")) (_) @stmt)
+    (block (assert_statement . (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)) (_) @stmt)
+    (block (assert_statement . (boolean_operator left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and") operator: "and")) (_) @stmt)
+    (module
+      (if_statement
+        condition: (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or")
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+    (block
+      (if_statement
+        condition: (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or")
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+    (module
+      (if_statement
+        condition: (boolean_operator left: (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or") operator: "or")
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+    (block
+      (if_statement
+        condition: (boolean_operator left: (boolean_operator left: (not_operator argument: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "or") operator: "or")
+        consequence: (block [(return_statement) (raise_statement) (continue_statement) (break_statement)] .)
+        !alternative)
+      (_) @stmt)
+    (if_statement
+      condition: (parenthesized_expression (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (parenthesized_expression (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and"))
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (parenthesized_expression (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call))
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (parenthesized_expression (boolean_operator left: (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and") operator: "and"))
+      consequence: (block (_) @stmt))
+    (if_statement
+      condition: (parenthesized_expression (boolean_operator left: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "and"))
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (parenthesized_expression (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and"))
+      consequence: (block (_) @stmt))
+    (elif_clause
+      condition: (parenthesized_expression (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call))
+      consequence: (block (_) @stmt))
+  ]
+  (#eq? @_isinstance "isinstance")
+)
+{
+  edge @stmt.narrow_scope -> @call.narrowing
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+}
+
+(
+  (conditional_expression
+    . (_) @body
+    (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) @op
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node @body.narrow_scope
+  edge @body.narrow_scope -> @op.narrow_scope
+  edge @body.narrow_scope -> @call.narrowing
+  attr (@body.narrow_scope -> @call.narrowing) precedence = 1
 }
