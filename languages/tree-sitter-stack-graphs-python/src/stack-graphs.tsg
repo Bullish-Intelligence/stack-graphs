@@ -246,6 +246,7 @@ inherit .class_super_scope
 inherit .declared_names
 inherit .enclosing_scope
 inherit .function_returns
+inherit .no_class_gate
 inherit .global
 inherit .global_dot
 inherit .relative_entry
@@ -402,6 +403,67 @@ inherit .type_param_scope
   ;; the scope that a literal pushes with the "()" symbol of its class
   node @mod.literal_scope
   attr (@mod.literal_scope) is_exported
+}
+
+;;;; Return annotations that name no class
+;;
+;; A call of an annotated function follows the return annotation only. This works when the
+;; annotation names a class. It does not work when the annotation names no class. These
+;; annotations name no class:
+;; - `Self`, `Any`, and `Type[...]` or `type[...]`,
+;; - a string, like `-> "Foo"`, `-> "mod.Foo"`, or `-> Optional["Foo"]`. The rules resolve a string
+;;   that holds one plain name like the bare name, and the function keeps the route of the body
+;;   too. A store like `o.x = x` after `o = self.copy()` lets a path through the store shadow the
+;;   short route of the annotation, and the route of the body then finds the member `x`. This
+;;   shadowing also happens for a bare class name. The rules keep the body for every string,
+;;   to keep the targets that only the body finds,
+;; - a name that the file binds with `TypeVar(...)`, `ParamSpec(...)`, `TypeVarTuple(...)`, or
+;;   `TypeAliasType(...)`,
+;; - a type parameter of a `def` or a `class`: `def first[T](...) -> T`,
+;; - a name that the file binds as a type alias: `X: TypeAlias = ...`, `type X = ...`, or a line
+;;   without indent that assigns a subscript or a union written with a bar.
+;; The rules read the file text for these names. The gate pattern holds the words that name no
+;; class. A condition cannot read a scoped variable, so the graph decides. The function has a
+;; gate node that pushes the symbol "<tv>" when the annotation matches the pattern, and any other
+;; symbol when it does not. The marker node pops "<tv>" and jumps to the returns of the body.
+;; A function with such an annotation keeps the value following of its `return` statements
+;; next to the annotation.
+
+(module) @mod
+{
+  var names = "Self|Any|TYPEOF"
+  scan (format "\n{}" (source-text @mod)) {
+    "\n[ \\t]*(\\w+)[ \\t]*(?::[^=\\n]*)?=[ \\t]*(?:\\w+\\.)*(?:TypeVar|ParamSpec|TypeVarTuple|TypeAliasType)\\("
+    {
+      set names = (format "{}|{}" names $1)
+    }
+    "\n[ \\t]*(\\w+)[ \\t]*:[ \\t]*[\"']?(?:\\w+\\.)*TypeAlias\\b"
+    {
+      set names = (format "{}|{}" names $1)
+    }
+    "\n[ \\t]*type[ \\t]+(\\w+)"
+    {
+      set names = (format "{}|{}" names $1)
+    }
+    "\n(\\w+)[ \\t]*=[ \\t]*[\\w.]+\\["
+    {
+      set names = (format "{}|{}" names $1)
+    }
+    "\n(\\w+)[ \\t]*=[ \\t]*[\\w.]+[ \\t]*\\|"
+    {
+      set names = (format "{}|{}" names $1)
+    }
+    "\n[ \\t]*(?:async[ \\t]+)?(?:def|class)[ \\t]+\\w+\\[([^\\]]+)\\]"
+    {
+      let squeezed = (replace $1 "[ \\t\\n*]" "")
+      let unbound = (replace squeezed "[:=][^,]*" "")
+      let words = (replace unbound "[^\\w,]" "")
+      let listed = (replace (replace words ",+$" "") ",+" "|")
+      set names = (format "{}|{}" names listed)
+    }
+  }
+  ; A pattern that matches a whole annotation when a word of the annotation names no class.
+  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"']).*$" names)
 }
 
 ;;
@@ -1034,7 +1096,17 @@ inherit .type_param_scope
   attr (@func.call) pop_scoped_symbol = "()"
   edge @params.before_scope -> JUMP_TO_SCOPE_NODE
   attr (return_value) is_exported
-  let @func.function_returns = return_value
+  ; The return statements reach the call through body_returns. A function with a return
+  ; annotation that names a class leaves body_returns unconnected, so a caller sees the
+  ; annotation only. See "Return annotations that name no class".
+  node body_returns
+  let @func.ret_value = return_value
+  let @func.function_returns = body_returns
+}
+
+(function_definition !return_type) @func
+{
+  edge @func.ret_value -> @func.function_returns
 }
 
 (lambda
@@ -3148,8 +3220,25 @@ inherit .type_param_scope
 {
   node instance
   attr (instance) push_scoped_symbol = "()", scope = @func.literal_scope
-  edge @func.function_returns -> instance
+  edge @func.ret_value -> instance
   edge instance -> @type.annot
+  ; Keep the value following of the body when the annotation names no class. Wrappers like
+  ; Optional become a parenthesis. A subscript of another container collapses to X. Type[...] and
+  ; type[...] become TYPEOF. Then only the names of the annotation itself remain.
+  let written = (source-text @type)
+  let unwrapped = (replace written "\\b(?:Optional|Union|Annotated|ClassVar|Final|Required|NotRequired|ReadOnly)\\[" "(")
+  let typed = (replace unwrapped "\\b(?:Type|type)[ \\t]*\\[" "TYPEOF(")
+  let flat1 = (replace typed "\\w*\\[[^\\[\\]]*\\]" "X")
+  let flat2 = (replace flat1 "\\w*\\[[^\\[\\]]*\\]" "X")
+  let flat3 = (replace flat2 "\\w*\\[[^\\[\\]]*\\]" "X")
+  node gate
+  node marker
+  attr (gate) push_scoped_symbol = (replace flat3 @func.no_class_gate "<tv>"), scope = @func.function_returns
+  attr (marker) pop_scoped_symbol = "<tv>"
+  attr (@func.function_returns) is_exported
+  edge @func.ret_value -> gate
+  edge gate -> marker
+  edge marker -> JUMP_TO_SCOPE_NODE
 }
 
 ;;;; isinstance narrowing

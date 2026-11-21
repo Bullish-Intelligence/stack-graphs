@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
+- A call of a function with a return annotation follows the annotation only, and no longer the `return` statements of the body. This holds when the annotation names a class. The body stays visible to the caller when the annotation names no class: `Self`, `Any`, `Type[...]`, a `TypeVar`, `ParamSpec`, or type alias that the same file binds, a type parameter of a `def` or `class`, and a string annotation. Before this change, the value of the body and the annotation both reached the caller, and the caller found members that the annotation does not name.
+
 - The language builds graphs with contraction on. See `StackGraphLanguage::set_contract_graph` in `tree-sitter-stack-graphs`. The graphs are smaller, and the results do not change in the tests.
 
 ## v0.3.0 -- 2024-12-12
