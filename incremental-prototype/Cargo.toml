@@ -1,0 +1,16 @@
+[package]
+name = "stack-graphs-incremental-prototype"
+version = "0.1.0"
+edition = "2018"
+publish = false
+
+[dependencies]
+salsa = "=0.28.5"
+rusqlite = { version = "=0.28.0", features = ["bundled"] }
+tree-sitter-stack-graphs-python = { path = "../languages/tree-sitter-stack-graphs-python" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

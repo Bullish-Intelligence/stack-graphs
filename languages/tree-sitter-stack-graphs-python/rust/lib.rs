@@ -5,8 +5,8 @@
 // Please see the LICENSE-APACHE or LICENSE-MIT files in this distribution for license details.
 // ------------------------------------------------------------------------------------------------
 
-use std::borrow::Cow;
 use stack_graphs::graph::StackGraph;
+use std::borrow::Cow;
 use tree_sitter_stack_graphs::loader::LanguageConfiguration;
 use tree_sitter_stack_graphs::loader::LoadError;
 use tree_sitter_stack_graphs::BuildError;
@@ -14,6 +14,9 @@ use tree_sitter_stack_graphs::CancellationFlag;
 use tree_sitter_stack_graphs::StackGraphLanguage;
 use tree_sitter_stack_graphs::Variables;
 use tree_sitter_stack_graphs::FILE_PATH_VAR;
+
+/// Incremental semantic lowering for the bounded Python prototype.
+pub mod incremental;
 
 /// The stack graphs tsg source for this language.
 pub const STACK_GRAPHS_TSG_PATH: &str = "src/stack-graphs.tsg";

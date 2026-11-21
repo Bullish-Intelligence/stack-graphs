@@ -4,11 +4,13 @@ members = [
   # library projects
   "lsp-positions",
   "stack-graphs",
+  "incremental-prototype",
   "tree-sitter-stack-graphs",
   "languages/*",
 ]
 default-members = [
   "lsp-positions",
   "stack-graphs",
+  "incremental-prototype",
   "tree-sitter-stack-graphs",
 ]

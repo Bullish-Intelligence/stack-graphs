@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+state_dir="$HOME/.local/state/stack-graphs/001-incremental-update"
+mkdir -p "$state_dir/attempts" "$state_dir/target"
+attempt_dir="$(mktemp -d "$state_dir/attempts/$(date -u +%Y%m%dT%H%M%S)-XXXXXX")"
+export STACK_GRAPHS_STATE="$attempt_dir"
+export CARGO_TARGET_DIR="$state_dir/target"
+printf '%s\n' 'devenv shell -- cargo run --locked -p stack-graphs-incremental-prototype --bin stack-graphs-incremental-prototype' > "$attempt_dir/command.txt"
+{
+  printf 'started_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'devenv='; devenv --version
+  devenv shell -- bash -lc 'printf "cargo="; cargo --version; printf "rustc="; rustc --version'
+  devenv shell -- git rev-parse HEAD
+  devenv shell -- git status --short
+} > "$attempt_dir/environment.txt" 2>&1
+set +e
+devenv shell -- cargo run --locked -p stack-graphs-incremental-prototype --bin stack-graphs-incremental-prototype > "$attempt_dir/stdout.log" 2> "$attempt_dir/stderr.log"
+exit_code=$?
+set -e
+printf '%s\n' "$exit_code" > "$attempt_dir/exit-code.txt"
+printf 'attempt_dir=%s\nexit_code=%s\n' "$attempt_dir" "$exit_code"
+cat "$attempt_dir/stdout.log"
+cat "$attempt_dir/stderr.log" >&2
+exit "$exit_code"
