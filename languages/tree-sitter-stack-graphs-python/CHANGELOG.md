@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The crate depends on `stack-graphs`, because `build_stub_module_into` takes a `StackGraph`.
 
+- The language builds graphs with contraction on. See `StackGraphLanguage::set_contract_graph` in `tree-sitter-stack-graphs`. The graphs are smaller, and the results do not change in the tests.
+
 ## v0.3.0 -- 2024-12-12
 
 - The `tree-sitter-stack-graphs` dependency is updated to version 0.10.

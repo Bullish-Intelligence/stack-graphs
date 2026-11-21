@@ -1682,3 +1682,211 @@ impl Default for StackGraph {
         }
     }
 }
+
+//-------------------------------------------------------------------------------------------------
+// Simplification of the graph of one file: prune dead-end scope nodes, contract plain scope nodes.
+
+/// Counts of one simplification of the graph of a file.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ContractionStats {
+    /// Dead-end scope nodes that the pruning cut off from the routes of the graph.
+    pub pruned_nodes: usize,
+    /// Edges that the pruning removed.
+    pub pruned_edges: usize,
+    /// Plain scope nodes that the contraction removed from the routes of the graph.
+    pub removable_nodes: usize,
+    /// Edges that the contraction redirected past a removed node.
+    pub redirected_edges: usize,
+    /// Redirections that the contraction skipped because the source already had an edge to the
+    /// target.
+    pub skipped_duplicates: usize,
+}
+
+impl StackGraph {
+    /// Simplifies the graph of one file before the file phase: prunes the dead-end scope nodes,
+    /// then contracts the chains of plain scope nodes (mode 1). The tree-sitter-stack-graphs
+    /// builder calls this at the end of each build, unless the caller turns it off.
+    pub fn simplify_file(&mut self, file: Handle<File>) -> ContractionStats {
+        let (pruned_nodes, pruned_edges) = self.prune_dead_end_scopes_in_file(file);
+        let mut stats = self.contract_plain_scopes_in_file(file, 1);
+        stats.pruned_nodes = pruned_nodes;
+        stats.pruned_edges = pruned_edges;
+        stats
+    }
+
+    /// Prunes the dead-end scope nodes of one file. A dead-end scope node is a scope node that is
+    /// not exported and has no outgoing edge, or only edges to dead-end scope nodes. No path can
+    /// end in such a node, because it is not an endpoint, and no path can leave it. A path
+    /// that enters it is never complete. The pruning removes the edges that enter a dead-end node.
+    /// This is safe with the arena: no node is deleted, so no handle changes. The dead-end nodes
+    /// stay in the arena, but no edge of a kept node leads to them. The pruning does not change the
+    /// incoming degree of a node that stays: an edge that it removes ends in a dead-end node, and
+    /// a dead-end node has edges to dead-end nodes only.
+    ///
+    /// Returns the number of dead-end nodes and the number of removed edges.
+    pub fn prune_dead_end_scopes_in_file(&mut self, file: Handle<File>) -> (usize, usize) {
+        let nodes: Vec<Handle<Node>> = self.nodes_for_file(file).collect();
+        // The scope nodes that can become dead: not exported, with a count of live outgoing edges.
+        let mut live_out: FxHashMap<Handle<Node>, usize> = FxHashMap::default();
+        for &n in &nodes {
+            match &self[n] {
+                Node::Scope(s) if !s.is_exported => {}
+                _ => continue,
+            }
+            let count = self.outgoing_edges.get(n).map_or(0, |v| v.len());
+            live_out.insert(n, count);
+        }
+        let mut dead: Vec<Handle<Node>> = live_out
+            .iter()
+            .filter(|(_, &count)| count == 0)
+            .map(|(&n, _)| n)
+            .collect();
+        if dead.is_empty() {
+            return (0, 0);
+        }
+        // The sources of the edges of the file, by sink.
+        let mut sources: FxHashMap<Handle<Node>, SmallVec<[Handle<Node>; 2]>> =
+            FxHashMap::default();
+        for &x in &nodes {
+            for o in self.outgoing_edges.get(x).into_iter().flatten() {
+                sources.entry(o.sink).or_default().push(x);
+            }
+        }
+        let mut is_dead: FxHashMap<Handle<Node>, ()> = dead.iter().map(|&n| (n, ())).collect();
+        let mut next = 0;
+        while next < dead.len() {
+            let d = dead[next];
+            next += 1;
+            for &p in sources.get(&d).into_iter().flatten() {
+                if is_dead.contains_key(&p) {
+                    continue;
+                }
+                if let Some(count) = live_out.get_mut(&p) {
+                    *count -= 1;
+                    if *count == 0 {
+                        is_dead.insert(p, ());
+                        dead.push(p);
+                    }
+                }
+            }
+        }
+        let mut removed = 0usize;
+        for &x in &nodes {
+            let touches = self
+                .outgoing_edges
+                .get(x)
+                .map_or(false, |v| v.iter().any(|o| is_dead.contains_key(&o.sink)));
+            if !touches {
+                continue;
+            }
+            let list = &mut self.outgoing_edges[x];
+            let before = list.len();
+            list.retain(|o| !is_dead.contains_key(&o.sink));
+            removed += before - list.len();
+        }
+        (dead.len(), removed)
+    }
+
+    /// Contracts the plain scope nodes of one file.  A plain scope node is a scope node that is
+    /// not exported.  It neither pushes nor pops, and it cannot be a definition or reference.
+    ///
+    /// `mode` 1 removes plain scope nodes with one incoming and one outgoing edge.  Mode 2
+    /// removes plain scope nodes with one outgoing edge, whatever their incoming edges.
+    ///
+    /// An edge `X -> S` of precedence `p`, where `S` has the single edge `S -> Z`, becomes
+    /// `X -> Z` of precedence `p`.  The precedence of `S -> Z` has no effect: no other edge of
+    /// `S` can shadow it.  The method leaves the nodes that it bypasses in the graph, with their
+    /// edges, but no route from a kept node reaches them any more.  A redirection that would
+    /// duplicate an existing edge of `X` is skipped, so that no two routes merge into one.
+    pub fn contract_plain_scopes_in_file(
+        &mut self,
+        file: Handle<File>,
+        mode: u8,
+    ) -> ContractionStats {
+        let nodes: Vec<Handle<Node>> = self.nodes_for_file(file).collect();
+        let mut counted_in: FxHashMap<Handle<Node>, u32> = FxHashMap::default();
+        for &x in &nodes {
+            for o in self.outgoing_edges.get(x).into_iter().flatten() {
+                *counted_in.entry(o.sink).or_insert(0) += 1;
+            }
+        }
+        // For each removable node: its single sink, and whether its in-edges are exact.
+        let mut removable: FxHashMap<Handle<Node>, (Handle<Node>, bool)> = FxHashMap::default();
+        for &n in &nodes {
+            let exported = match &self[n] {
+                Node::Scope(s) => s.is_exported,
+                _ => continue,
+            };
+            if exported {
+                continue;
+            }
+            let outs: &[OutgoingEdge] = self.outgoing_edges.get(n).map_or(&[][..], |v| &v[..]);
+            if outs.len() != 1 || outs[0].sink == n {
+                continue;
+            }
+            let exact = self.incoming_edge_degree(n) == Degree::One
+                && counted_in.get(&n).copied().unwrap_or(0) == 1;
+            if mode == 1 && !exact {
+                continue;
+            }
+            removable.insert(n, (outs[0].sink, exact));
+        }
+        let mut stats = ContractionStats::default();
+        let mut inexact_targets: Vec<Handle<Node>> = Vec::new();
+        for &x in &nodes {
+            if removable.contains_key(&x) {
+                continue;
+            }
+            let mut list: SmallVec<[OutgoingEdge; 4]> = SmallVec::new();
+            for o in self.outgoing_edges.get(x).into_iter().flatten() {
+                list.push(OutgoingEdge {
+                    sink: o.sink,
+                    precedence: o.precedence,
+                });
+            }
+            let mut changed = false;
+            for i in 0..list.len() {
+                let first = list[i].sink;
+                if !removable.contains_key(&first) {
+                    continue;
+                }
+                // Follow the chain to the first node that stays.
+                let mut z = first;
+                let mut steps = 0usize;
+                let mut exact = true;
+                while let Some(&(next, e)) = removable.get(&z) {
+                    exact &= e;
+                    z = next;
+                    steps += 1;
+                    if steps > removable.len() {
+                        break;
+                    }
+                }
+                if steps > removable.len() {
+                    continue;
+                }
+                if list.iter().any(|o| o.sink == z) {
+                    stats.skipped_duplicates += 1;
+                    continue;
+                }
+                list[i].sink = z;
+                changed = true;
+                stats.redirected_edges += 1;
+                if !exact {
+                    inexact_targets.push(z);
+                }
+            }
+            if changed {
+                list.sort_by_key(|o| o.sink);
+                self.outgoing_edges[x] = list;
+            }
+        }
+        for z in inexact_targets {
+            if self.incoming_edge_degree(z) == Degree::One {
+                self.incoming_edges[z] = Degree::Multiple;
+            }
+        }
+        stats.removable_nodes = removable.len();
+        stats
+    }
+}

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Stats::bounded` reports the limit that stopped a run or cut paths, as `StitchBound`. `Stats` also records `work`, `peak_queue_len`, and `arena_cells_added`.
 - `PartialPaths::with_scope` drops all cells that a closure adds. `PartialPaths::allocated_cells` counts the cells.
 - `ForwardPartialPathStitcher::find_complete_partial_paths_in_scope` resolves one reference in such a scope.
+- `StackGraph::simplify_file` makes the graph of one file smaller before the file phase. It prunes the dead-end scope nodes: scope nodes that are not exported and have no outgoing edge, or only edges to such nodes. It then merges each chain of plain scope nodes that have one incoming edge and one outgoing edge, and it keeps the precedence of the first edge. The reached definitions do not change. `StackGraph::prune_dead_end_scopes_in_file` and `StackGraph::contract_plain_scopes_in_file` do the two steps. `ContractionStats` counts them.
 
 ### Changed
 

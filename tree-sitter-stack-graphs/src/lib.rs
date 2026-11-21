@@ -454,6 +454,7 @@ pub struct StackGraphLanguage {
     tsg_source: std::borrow::Cow<'static, str>,
     functions: Functions,
     debug_attributes: bool,
+    contract_graph: bool,
 }
 
 impl StackGraphLanguage {
@@ -471,6 +472,7 @@ impl StackGraphLanguage {
             tsg_source: Cow::from(String::new()),
             functions: Self::default_functions(),
             debug_attributes: true,
+            contract_graph: true,
         }
     }
 
@@ -489,6 +491,7 @@ impl StackGraphLanguage {
             tsg_source: Cow::from(tsg_source.to_string()),
             functions: Self::default_functions(),
             debug_attributes: true,
+            contract_graph: true,
         })
     }
 
@@ -511,6 +514,19 @@ impl StackGraphLanguage {
     /// information can turn them off to save time and memory.
     pub fn set_debug_attributes(&mut self, enabled: bool) {
         self.debug_attributes = enabled;
+    }
+
+    /// Sets whether the builder simplifies the graph of each file at the end of a build. The
+    /// simplification prunes the dead-end scope nodes and contracts the chains of plain scope
+    /// nodes. See [`StackGraph::simplify_file`][]. It keeps the reached definitions and makes the
+    /// graph smaller, so the file phase and the resolution cost less. The default is true.
+    pub fn set_contract_graph(&mut self, enabled: bool) {
+        self.contract_graph = enabled;
+    }
+
+    /// Returns whether the builder simplifies the graph of each file. See [`set_contract_graph`].
+    pub fn contract_graph(&self) -> bool {
+        self.contract_graph
     }
 
     pub fn set_tsg_info(&mut self, path: PathBuf, source: Cow<'static, str>) {
@@ -982,6 +998,10 @@ impl<'a> Builder<'a> {
                     edge,
                 )?;
             }
+        }
+
+        if self.sgl.contract_graph {
+            self.stack_graph.simplify_file(self.file);
         }
 
         Ok(())
