@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PartialPaths::with_scope` drops all cells that a closure adds. `PartialPaths::allocated_cells` counts the cells.
 - `ForwardPartialPathStitcher::find_complete_partial_paths_in_scope` resolves one reference in such a scope.
 - `StackGraph::simplify_file` makes the graph of one file smaller before the file phase. It prunes the dead-end scope nodes: scope nodes that are not exported and have no outgoing edge, or only edges to such nodes. It then merges each chain of plain scope nodes that have one incoming edge and one outgoing edge, and it keeps the precedence of the first edge. The reached definitions do not change. `StackGraph::prune_dead_end_scopes_in_file` and `StackGraph::contract_plain_scopes_in_file` do the two steps. `ContractionStats` counts them.
+- Shadow aware similar path detection keeps one more `Equal` similar path for a path that starts at a node with the syntax type `store`, while the known path is shadowable and the bucket holds fewer than two paths. The rules of a language mark the reference of an attribute store this way. A store like `o.x = x` has the name of the field on both sides. A route that a lexical binding shadows can come first, and then the other route was lost.
 
 ### Changed
 

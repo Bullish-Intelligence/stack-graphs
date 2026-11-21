@@ -1245,6 +1245,10 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
                             graph,
                             partials,
                             &new_partial_path,
+                            graph
+                                .source_info(new_partial_path.start_node)
+                                .and_then(|si| si.syntax_type.into_option())
+                                .map_or(false, |st| &graph[st] == "store"),
                             |ps, path| path.can_be_shadowed(graph, ps),
                             cmp,
                         )

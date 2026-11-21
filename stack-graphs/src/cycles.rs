@@ -88,6 +88,9 @@ impl HasPathKey for PartialPath {
     }
 }
 
+/// The most paths of one key that the detector keeps when another path can shadow them.
+const KEEP_SHADOWABLE_PER_KEY: usize = 2;
+
 impl<P> SimilarPathDetector<P>
 where
     P: HasPathKey,
@@ -122,7 +125,7 @@ where
     where
         Cmp: Fn(&mut P::Arena, &P, &P) -> Option<Ordering>,
     {
-        self.add_path_shadow_aware(graph, arena, path, |_, _| true, cmp)
+        self.add_path_shadow_aware(graph, arena, path, false, |_, _| true, cmp)
     }
 
     /// Like [`add_path`][SimilarPathDetector::add_path], but the detector also keeps a path that
@@ -135,11 +138,19 @@ where
     /// new path, too.  Once the detector knows a path that nothing can shadow, it ignores all later
     /// similar paths.  Hence it keeps at most two paths per key: the first path, and the first
     /// path that nothing can shadow.
+    ///
+    /// If `keep_extra` is set, the detector also keeps a new path that another path can shadow,
+    /// as long as the bucket of the key holds fewer than `KEEP_SHADOWABLE_PER_KEY` paths.  The
+    /// test `can_be_shadowed` says `true` for most long paths, so two routes to the same end
+    /// both look shadowable.  The route that is found first can be a route that a lexical
+    /// binding shadows later.  Then the second route is the only one that survives.  The caller
+    /// sets the flag for the references where this happens.
     pub fn add_path_shadow_aware<Cmp, Sh>(
         &mut self,
         _graph: &StackGraph,
         arena: &mut P::Arena,
         path: &P,
+        keep_extra: bool,
         mut can_be_shadowed: Sh,
         cmp: Cmp,
     ) -> bool
@@ -177,9 +188,13 @@ where
                     if ordering == Ordering::Equal {
                         let other_shadowable = *other_shadowable
                             .get_or_insert_with(|| can_be_shadowed(arena, other_path));
+                        // Keep a new path that nothing can shadow.  With `keep_extra`, also keep
+                        // a new path that another path may shadow, while the bucket is small.
                         if other_shadowable
-                            && !*new_shadowable
-                                .get_or_insert_with(|| can_be_shadowed(arena, path))
+                            && ((keep_extra
+                                && possibly_similar_paths.len() < KEEP_SHADOWABLE_PER_KEY)
+                                || !*new_shadowable
+                                    .get_or_insert_with(|| can_be_shadowed(arena, path)))
                         {
                             // Another path can shadow the known path, and nothing can shadow the
                             // new path.  Keep the new path, unless a later known path makes it
