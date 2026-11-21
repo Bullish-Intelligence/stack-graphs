@@ -24,7 +24,9 @@ use stack_graphs::stitching::Stats;
 use stack_graphs::NoCancellation;
 
 use crate::test_graphs;
+use crate::util::create_pop_scoped_symbol_node;
 use crate::util::create_pop_symbol_node;
+use crate::util::create_push_scoped_symbol_node;
 use crate::util::create_push_symbol_node;
 use crate::util::create_scope_node;
 
@@ -312,4 +314,111 @@ fn scopes_release_memory_on_panic() {
     assert_eq!(before, partials.allocated_cells());
     // The checkpoint is gone, so a new scope works.
     partials.with_scope(|_| ());
+}
+
+/// Builds a chain of `levels` calls. Each level has two call sites. A call site pushes the symbol
+/// `()` with its own scope, and the callee pops it right away. The scope stack of a path grows by
+/// one scope at each level, so the paths differ in all their call sites. Like `diamond_chain`,
+/// the graph has `2^N` routes, but now no two routes carry the same scope stack.
+///
+/// With `jumps`, the reference reaches the definition only after one jump to a scope for each level.
+/// The jumps go from the newest call site to the oldest one. The definition sits behind the
+/// call sites of the first level.
+fn call_chain(levels: usize, jumps: bool) -> (StackGraph, Handle<Node>) {
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("calls").unwrap();
+    let reference = create_push_symbol_node(&mut graph, file, "x", true);
+    let mut previous = reference;
+    let mut first_sites = Vec::new();
+    for level in 0..levels {
+        let pop = create_pop_scoped_symbol_node(&mut graph, file, "()", false);
+        for _ in 0..2 {
+            let site = create_scope_node(&mut graph, file, true);
+            let site_id = graph[site].id();
+            let push = create_push_scoped_symbol_node(&mut graph, file, "()", site_id, false);
+            graph.add_edge(previous, push, 0);
+            graph.add_edge(push, pop, 0);
+            if level == 0 {
+                first_sites.push(site);
+            }
+            if jumps {
+                graph.add_edge(site, StackGraph::jump_to_node(), 0);
+            }
+        }
+        previous = pop;
+    }
+    let definition = create_pop_symbol_node(&mut graph, file, "x", true);
+    if jumps {
+        graph.add_edge(previous, StackGraph::jump_to_node(), 0);
+        for site in first_sites {
+            graph.add_edge(site, definition, 0);
+        }
+    } else {
+        graph.add_edge(previous, definition, 0);
+    }
+    (graph, reference)
+}
+
+#[test]
+fn without_a_scope_depth_limit_call_chains_grow_exponentially() {
+    for levels in [4, 6, 8] {
+        let (graph, reference) = call_chain(levels, false);
+        let (count, stats) = run(&graph, reference, StitcherConfig::default());
+        assert_eq!(1usize << levels, count);
+        assert!(stats.peak_queue_len >= 1 << levels);
+    }
+}
+
+#[test]
+fn a_scope_depth_limit_stops_the_growth_of_call_chains() {
+    let config = StitcherConfig::default().with_max_scope_depth(Some(1));
+    let mut peaks = Vec::new();
+    for levels in [4, 8, 16, 32] {
+        let (graph, reference) = call_chain(levels, false);
+        let (count, stats) = run(&graph, reference, config);
+        // The paths that differ only in old call sites are similar. The detector keeps few.
+        assert!(count >= 1 && count <= 2);
+        assert_eq!(None, stats.bounded);
+        peaks.push(stats.peak_queue_len);
+    }
+    assert!(
+        peaks.iter().all(|peak| *peak <= peaks[0] + 2),
+        "{}",
+        format!("{peaks:?}")
+    );
+
+    let (graph, reference) = call_chain(8, false);
+    let config = StitcherConfig::default().with_max_scope_depth(Some(2));
+    let (_, stats) = run(&graph, reference, config);
+    assert!(stats.peak_queue_len < 64);
+}
+
+#[test]
+fn a_scope_depth_limit_loses_results_beyond_its_depth_and_adds_none() {
+    let (graph, reference) = call_chain(3, true);
+    // The detector merges the routes that reach the same definition, so few paths remain.
+    let (count, _) = run(&graph, reference, StitcherConfig::default());
+    assert!(count >= 1);
+    // A jump to a scope that the limit dropped finds no scope, so the path ends.
+    for depth in [1, 2] {
+        let config = StitcherConfig::default().with_max_scope_depth(Some(depth));
+        let (count, stats) = run(&graph, reference, config);
+        assert_eq!(0, count, "depth {depth}");
+        assert_eq!(None, stats.bounded);
+    }
+    // The limit is deep enough for the jumps. The limit merges the routes that it can.
+    let config = StitcherConfig::default().with_max_scope_depth(Some(3));
+    let (count, _) = run(&graph, reference, config);
+    assert!(count >= 1);
+}
+
+#[test]
+fn a_scope_depth_limit_that_the_paths_do_not_reach_changes_nothing() {
+    let (graph, reference) = call_chain(3, true);
+    let config = StitcherConfig::default();
+    let (count, stats) = run(&graph, reference, config);
+    let (limited_count, limited_stats) =
+        run(&graph, reference, config.with_max_scope_depth(Some(100)));
+    assert_eq!(count, limited_count);
+    assert_eq!(stats.work, limited_stats.work);
 }

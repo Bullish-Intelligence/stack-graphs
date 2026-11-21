@@ -29,6 +29,10 @@ name = "builtins"
 path = "rust/builtins.rs"
 
 [[test]]
+name = "call_chains"
+path = "rust/call_chains.rs"
+
+[[test]]
 name = "incremental"
 path = "rust/incremental_test.rs"
 

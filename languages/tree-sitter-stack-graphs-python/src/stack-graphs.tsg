@@ -1244,9 +1244,13 @@ inherit .type_param_scope
   } else {
     edge @first_param.def -> @first_param.class_self_scope
   }
-  edge @first_param.class_member_attr_scope -> @first_param.output
-  edge @first_param.output -> @method_body.after_scope
-  attr (@first_param.output) push_node = @first_param
+  ; Only a method that can store an attribute of its first parameter joins the member attributes.
+  let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+[^\\n=(]*=(?:[^=]|$)|\\b(?:for|as)\\s+[(\\[\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param)) "")
+  if (not (eq stores (source-text @method_body))) {
+    edge @first_param.class_member_attr_scope -> @first_param.output
+    edge @first_param.output -> @method_body.after_scope
+    attr (@first_param.output) push_node = @first_param
+  }
 }
 
 ;; A property. A read of `obj.prop` behaves like a call of the method `prop`, so the result of the
@@ -1292,7 +1296,8 @@ inherit .type_param_scope
          )
 ) @class
 {
-  if (not (eq (source-text @decorator) "staticmethod")) {
+  let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+[^\\n=(]*=(?:[^=]|$)|\\b(?:for|as)\\s+[(\\[\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param)) "")
+  if (and (not (eq (source-text @decorator) "staticmethod")) (not (eq stores (source-text @method_body)))) {
     edge @first_param.class_member_attr_scope -> @first_param.output
     edge @first_param.output -> @method_body.after_scope
     attr (@first_param.output) push_node = @first_param

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- A method joins the member attributes of its class only if its body can store an attribute of its first parameter: `self.x = v`, `self.x += v`, `self.x: T = v`, a tuple target, or a `for` or `as` target. Before this change, a lookup of a member entered every method of the class, such as the 66 methods of `str` in the builtins, and went on in each one. One lookup made as many paths as the class has methods, and many routes into one class hit the queue limit of the stitcher. The results do not change, because a method that stores nothing defines no member. Measured against scip-python: on the standard library (160 files, 3 percent annotated), the references that a limit stops fall from 26 to 10, and the run takes 32 percent less time. On mypy the run takes 38 percent less time. No location goes from resolved to unresolved where scip-python agrees with the old result.
+
+- The stitcher setting `StitcherConfig::with_max_scope_depth` bounds the growth of the call chain. A function that has two call sites at each of N levels gave 2^(N+1) paths. With depth 1, the queue of the same chain peaks at 9 paths for any N. On the standard library, depth 1 lowers the references that a limit stops from 10 to 2, with no other change. The rules do not set it. The caller of the stitcher does.
+
 - A function inside another function sees the bindings of the enclosing function before the final bindings of the module and the builtins. The same holds for a lambda inside a function. Before this change, a name of the enclosing function resolved together with a module or builtin name.
 
 - An `if` statement with an `else` clause no longer lets the bindings before the statement flow around its branches. After the statement, a name reaches the bindings of the branches, and an earlier binding only if a branch passes it through. The language configuration sets `shadow_aware_similar_paths` for this. Every stitcher that resolves Python graphs must set `StitcherConfig::with_shadow_aware_similar_paths(true)`. Without it, a name can lose a binding.
