@@ -160,8 +160,21 @@ unsafe impl<T> Sync for Handle<T> {}
 /// Manages the life cycle of instances of type `T`.  You can allocate new instances of `T` from
 /// the arena.  All of the instances managed by this arena will be dropped as a single operation
 /// when the arena itself is dropped.
+///
+/// An arena can be an _overlay_ of a frozen base arena.  The handles below `offset` name the
+/// items of the base.  The overlay reads them and never changes them.  New items go to the
+/// overlay's own storage.  Each thread can own an overlay of one shared base.
 pub struct Arena<T> {
+    /// The own items.  A plain arena keeps a placeholder at index 0.  An overlay has none.
     items: Vec<MaybeUninit<T>>,
+    /// Overlay only: the items of the frozen base.  Null for a plain arena.
+    base: *const MaybeUninit<T>,
+    /// Overlay only: the number of items of the base, placeholder included.  Zero for a plain
+    /// arena.  The handle `i` names `items[i - offset]` when `i >= offset`.
+    offset: usize,
+    /// Overlay only: the cached reversals of base cells that the overlay computed.  The base
+    /// cells stay unchanged.  Only reversible lists use this map.
+    base_links: fxhash::FxHashMap<u32, u32>,
     /// While a checkpoint is active: the number of items when it started.  Zero means that no
     /// checkpoint is active.  The first item is a placeholder, so a real mark is never zero.
     checkpoint_mark: usize,
@@ -170,10 +183,16 @@ pub struct Arena<T> {
     checkpoint_journal: Vec<u32>,
 }
 
+// The raw base pointer removes the automatic implementations.  A plain arena owns its items like
+// a `Vec`.  An overlay only reads its base, and the owner of the base keeps it alive and frozen.
+unsafe impl<T: Send> Send for Arena<T> {}
+unsafe impl<T: Sync> Sync for Arena<T> {}
+
 impl<T> Drop for Arena<T> {
     fn drop(&mut self) {
+        let first = if self.offset == 0 { 1 } else { 0 };
         unsafe {
-            let items = std::mem::transmute::<_, &mut [T]>(&mut self.items[1..]) as *mut [T];
+            let items = std::mem::transmute::<_, &mut [T]>(&mut self.items[first..]) as *mut [T];
             items.drop_in_place();
         }
     }
@@ -184,9 +203,39 @@ impl<T> Arena<T> {
     pub fn new() -> Arena<T> {
         Arena {
             items: vec![MaybeUninit::uninit()],
+            base: std::ptr::null(),
+            offset: 0,
+            base_links: Default::default(),
             checkpoint_mark: 0,
             checkpoint_journal: Vec::new(),
         }
+    }
+
+    /// Creates an empty overlay of this arena.  The overlay reads the items of this arena and
+    /// adds new items to its own storage.  Its first new handle follows the last handle of this
+    /// arena.
+    ///
+    /// # Safety
+    ///
+    /// This arena must outlive the overlay.  Nothing may change, add, or drop an item of this
+    /// arena while the overlay lives.
+    pub(crate) unsafe fn overlay(&self) -> Arena<T> {
+        assert!(self.offset == 0, "an overlay cannot have an overlay");
+        assert!(self.checkpoint_mark == 0, "freeze an arena outside of a checkpoint");
+        Arena {
+            items: Vec::new(),
+            base: self.items.as_ptr(),
+            offset: self.items.len(),
+            base_links: Default::default(),
+            checkpoint_mark: 0,
+            checkpoint_journal: Vec::new(),
+        }
+    }
+
+    /// Returns whether a handle names an item of the frozen base of an overlay.
+    #[inline(always)]
+    pub(crate) fn is_base(&self, handle: Handle<T>) -> bool {
+        handle.as_usize() < self.offset
     }
 
     /// Starts a checkpoint.  A later call to [`rollback`][Arena::rollback] drops every item added
@@ -200,7 +249,7 @@ impl<T> Arena<T> {
             self.checkpoint_mark == 0,
             "an arena checkpoint is already active"
         );
-        self.checkpoint_mark = self.items.len();
+        self.checkpoint_mark = self.len();
         self.checkpoint_journal.clear();
     }
 
@@ -208,6 +257,7 @@ impl<T> Arena<T> {
     /// active and the item is older than the checkpoint.
     #[inline(always)]
     pub(crate) fn record_mutation(&mut self, handle: Handle<T>) {
+        debug_assert!(!self.is_base(handle), "an overlay never changes a base item");
         if self.checkpoint_mark != 0 && handle.as_usize() < self.checkpoint_mark {
             self.checkpoint_journal.push(handle.as_u32());
         }
@@ -216,16 +266,19 @@ impl<T> Arena<T> {
     /// Ends the active checkpoint.  Drops the items added since the checkpoint, and calls `undo`
     /// for each older item that the owner reported as changed.  Handles to dropped items are
     /// invalid after this call.  Returns the number of dropped items.
+    ///
+    /// An overlay also forgets the base reversals that it computed after the checkpoint.
     pub(crate) fn rollback<F>(&mut self, mut undo: F) -> usize
     where
         F: FnMut(&T),
     {
-        let mark = self.checkpoint_mark;
-        assert!(mark != 0, "no arena checkpoint is active");
+        assert!(self.checkpoint_mark != 0, "no arena checkpoint is active");
+        let mark = self.checkpoint_mark - self.offset;
         self.checkpoint_mark = 0;
         for index in self.checkpoint_journal.drain(..) {
-            undo(unsafe { &*self.items[index as usize].as_ptr() });
+            undo(unsafe { &*self.items[index as usize - self.offset].as_ptr() });
         }
+        self.base_links.clear();
         let dropped = self.items.len() - mark;
         if dropped > 0 {
             unsafe {
@@ -240,6 +293,9 @@ impl<T> Arena<T> {
             self.items.shrink_to(mark.max(1024));
         }
         self.checkpoint_journal.shrink_to(1024);
+        if self.base_links.capacity() > 1024 {
+            self.base_links.shrink_to(1024);
+        }
         dropped
     }
 
@@ -252,7 +308,8 @@ impl<T> Arena<T> {
     /// the arena are invalid.
     #[inline(always)]
     pub fn clear(&mut self) {
-        self.items.truncate(1);
+        self.items.truncate(if self.offset == 0 { 1 } else { 0 });
+        self.base_links.clear();
         self.checkpoint_mark = 0;
         self.checkpoint_journal.clear();
     }
@@ -262,39 +319,46 @@ impl<T> Arena<T> {
     /// Note that we do not deduplicate instances of `T` in any way.  If you add two instances that
     /// have the same content, you will get distinct handles for each one.
     pub fn add(&mut self, item: T) -> Handle<T> {
-        let index = self.items.len() as u32;
+        let index = self.len() as u32;
         self.items.push(MaybeUninit::new(item));
         Handle::new(unsafe { NonZeroU32::new_unchecked(index) })
     }
 
     /// Dereferences a handle to an instance owned by this arena, returning a reference to it.
+    #[inline(always)]
     pub fn get(&self, handle: Handle<T>) -> &T {
-        unsafe { std::mem::transmute(&self.items[handle.as_usize()]) }
+        let index = handle.as_usize();
+        if index < self.offset {
+            return unsafe { &*(self.base.add(index) as *const T) };
+        }
+        unsafe { std::mem::transmute(&self.items[index - self.offset]) }
     }
     ///
     /// Dereferences a handle to an instance owned by this arena, returning a mutable reference to
     /// it.
     pub fn get_mut(&mut self, handle: Handle<T>) -> &mut T {
-        unsafe { std::mem::transmute(&mut self.items[handle.as_usize()]) }
+        assert!(!self.is_base(handle), "an overlay cannot change a base item");
+        unsafe { std::mem::transmute(&mut self.items[handle.as_usize() - self.offset]) }
     }
 
     /// Returns an iterator of all of the handles in this arena.  (Note that this iterator does not
     /// retain a reference to the arena!)
     pub fn iter_handles(&self) -> impl Iterator<Item = Handle<T>> {
-        (1..self.items.len())
+        (1..self.len())
             .into_iter()
             .map(|index| Handle::new(unsafe { NonZeroU32::new_unchecked(index as u32) }))
     }
 
     /// Returns a pointer to this arena's storage.
     pub(crate) fn as_ptr(&self) -> *const T {
+        assert!(self.offset == 0, "an overlay has no single storage");
         self.items.as_ptr() as *const T
     }
 
     /// Returns the number of instances stored in this arena.
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.offset + self.items.len()
     }
 }
 
@@ -738,7 +802,7 @@ impl<T> ReversibleList<T> {
             // The empty list is already reversed.
             return true;
         }
-        arena.get(self.cells).reversed.get().is_some()
+        arena.reversal_of(self.cells).is_some()
     }
 
     /// Pushes a new element onto the front of this list.
@@ -778,7 +842,7 @@ where
             return;
         }
         self.ensure_reversal_available(arena);
-        self.cells = arena.get(self.cells).reversed.get().unwrap();
+        self.cells = arena.reversal_of(self.cells).unwrap();
     }
 
     /// Ensures that the reversal of this list is available.  It can be useful to precalculate this
@@ -790,14 +854,13 @@ where
             // The empty list is already reversed.
             return;
         }
-        if arena.get(self.cells).reversed.get().is_some() {
+        if arena.reversal_of(self.cells).is_some() {
             return;
         }
 
         // If not, reverse the list and cache the result.
         let new_reversed = ReversibleListCell::reverse(self.cells, arena);
-        arena.get(self.cells).reversed.set(Some(new_reversed));
-        arena.record_mutation(self.cells);
+        arena.set_reversal(self.cells, new_reversed);
     }
 }
 
@@ -809,8 +872,40 @@ impl<T> ReversibleList<T> {
             // The empty list is already reversed.
             return Ok(());
         }
-        self.cells = arena.get(self.cells).reversed.get().ok_or(())?;
+        self.cells = arena.reversal_of(self.cells).ok_or(())?;
         Ok(())
+    }
+}
+
+impl<T> ReversibleListArena<T> {
+    /// Returns the cached reversal of a cell.  An overlay also looks in its own map for a base
+    /// cell.
+    #[inline(always)]
+    fn reversal_of(&self, cell: Handle<ReversibleListCell<T>>) -> Option<Handle<ReversibleListCell<T>>> {
+        let cached = self.get(cell).reversed.get();
+        if cached.is_none() && self.is_base(cell) {
+            return self
+                .base_links
+                .get(&cell.as_u32())
+                .map(|&index| Handle::new(unsafe { NonZeroU32::new_unchecked(index) }));
+        }
+        cached
+    }
+
+    /// Caches the reversal of a cell.  An overlay keeps the reversal of a base cell in its own
+    /// map, so the shared base stays unchanged.
+    #[inline(always)]
+    fn set_reversal(
+        &mut self,
+        cell: Handle<ReversibleListCell<T>>,
+        reversal: Handle<ReversibleListCell<T>>,
+    ) {
+        if self.is_base(cell) {
+            self.base_links.insert(cell.as_u32(), reversal.as_u32());
+            return;
+        }
+        self.get(cell).reversed.set(Some(reversal));
+        self.record_mutation(cell);
     }
 }
 
@@ -1266,3 +1361,118 @@ impl<T> Clone for Deque<T> {
 }
 
 impl<T> Copy for Deque<T> {}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+
+    /// Builds the list `[1, 2, 3]` in a plain arena, and returns it.  It has no reversal.
+    fn base_with_list() -> (ReversibleListArena<u32>, ReversibleList<u32>) {
+        let mut arena = ReversibleList::new_arena();
+        let mut list = ReversibleList::empty();
+        for value in [3, 2, 1] {
+            list.push_front(&mut arena, value);
+        }
+        (arena, list)
+    }
+
+    fn collect(list: ReversibleList<u32>, arena: &ReversibleListArena<u32>) -> Vec<u32> {
+        list.iter(arena).copied().collect()
+    }
+
+    #[test]
+    fn an_overlay_reverses_a_base_cell_without_changing_the_base() {
+        let (base, list) = base_with_list();
+        let base_len = base.len();
+        let mut overlay = unsafe { base.overlay() };
+        assert_eq!(overlay.len(), base_len);
+        assert_eq!(collect(list, &overlay), vec![1, 2, 3]);
+        assert!(!list.have_reversal(&overlay));
+
+        let mut reversed = list;
+        reversed.reverse(&mut overlay);
+        assert_eq!(collect(reversed, &overlay), vec![3, 2, 1]);
+        // The reversal cells are new cells of the overlay.
+        assert_eq!(overlay.len(), base_len + 3);
+        assert_eq!(overlay.base_links.len(), 1);
+        assert!(list.have_reversal(&overlay));
+        // The base cell has no cached reversal.
+        assert!(base.get(list.cells).reversed.get().is_none());
+        assert_eq!(base.len(), base_len);
+        assert_eq!(collect(list, &base), vec![1, 2, 3]);
+
+        // A second reversal uses the cached one.
+        let mut again = list;
+        again.reverse(&mut overlay);
+        assert!(again.is_same_list(&reversed));
+        assert_eq!(overlay.len(), base_len + 3);
+    }
+
+    #[test]
+    fn a_rollback_in_an_overlay_clears_the_base_reversals() {
+        let (base, list) = base_with_list();
+        let base_len = base.len();
+        let mut overlay = unsafe { base.overlay() };
+
+        // An own cell that is older than the checkpoint.
+        let mut own = ReversibleList::empty();
+        own.push_front(&mut overlay, 8);
+        own.push_front(&mut overlay, 9);
+        let own_len = overlay.len();
+
+        overlay.checkpoint();
+        let mut extra = list;
+        extra.push_front(&mut overlay, 0);
+        let mut reversed = list;
+        reversed.reverse(&mut overlay);
+        own.ensure_reversal_available(&mut overlay);
+        assert_eq!(overlay.base_links.len(), 1);
+        assert!(own.have_reversal(&overlay));
+
+        let dropped = overlay.rollback(|cell| cell.forget_reversal());
+        assert!(dropped > 0);
+        assert_eq!(overlay.len(), own_len);
+        assert!(overlay.base_links.is_empty());
+        assert!(!list.have_reversal(&overlay));
+        assert!(!own.have_reversal(&overlay));
+        assert_eq!(collect(own, &overlay), vec![9, 8]);
+        // The base stays unchanged.
+        assert_eq!(base.len(), base_len);
+        assert!(base.get(list.cells).reversed.get().is_none());
+        assert_eq!(collect(list, &base), vec![1, 2, 3]);
+
+        // The overlay works after the rollback.
+        let mut again = list;
+        again.reverse(&mut overlay);
+        assert_eq!(collect(again, &overlay), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn overlays_on_threads_reverse_the_same_base_cell() {
+        let (base, list) = base_with_list();
+        let base_len = base.len();
+        // A frozen base is safe to share: no one changes it while the overlays live.
+        struct Shared<'a>(&'a ReversibleListArena<u32>, ReversibleList<u32>);
+        unsafe impl Sync for Shared<'_> {}
+        let shared = Shared(&base, list);
+        let shared = &shared;
+        let results: Vec<(Vec<u32>, usize)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let mut overlay = unsafe { shared.0.overlay() };
+                        let mut reversed = shared.1;
+                        reversed.reverse(&mut overlay);
+                        (collect(reversed, &overlay), overlay.len())
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).collect()
+        });
+        for (values, len) in results {
+            assert_eq!(values, vec![3, 2, 1]);
+            assert_eq!(len, base_len + 3);
+        }
+        assert!(base.get(list.cells).reversed.get().is_none());
+    }
+}

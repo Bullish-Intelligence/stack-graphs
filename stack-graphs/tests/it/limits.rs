@@ -422,3 +422,85 @@ fn a_scope_depth_limit_that_the_paths_do_not_reach_changes_nothing() {
     assert_eq!(count, limited_count);
     assert_eq!(stats.work, limited_stats.work);
 }
+
+#[test]
+fn overlays_of_frozen_paths_match_scoped_resolution_on_threads() {
+    let graph = test_graphs::class_field_through_function_parameter::new::<StackGraph>();
+    let mut partials = PartialPaths::new();
+    let db = database_for(&graph, &mut partials);
+    let expected = resolve_all(&graph, &mut partials, &db, true, StitcherConfig::default());
+    let before = partials.allocated_cells();
+
+    let frozen = partials.freeze();
+    let results: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let frozen = &frozen;
+                let (graph, db) = (&graph, &db);
+                scope.spawn(move || {
+                    let mut overlay = frozen.overlay();
+                    // The first new cell of an overlay follows the frozen cells.
+                    assert_eq!(before, overlay.allocated_cells());
+                    let first =
+                        resolve_all(graph, &mut overlay, db, true, StitcherConfig::default());
+                    let second =
+                        resolve_all(graph, &mut overlay, db, true, StitcherConfig::default());
+                    assert_eq!(before, overlay.allocated_cells());
+                    assert_eq!(first, second);
+                    first
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    for result in results {
+        assert_eq!(expected, result);
+    }
+    let mut thawed = stack_graphs::partial::FrozenPartialPaths::thaw(frozen)
+        .ok()
+        .expect("no overlay is alive");
+    assert_eq!(before, thawed.allocated_cells());
+    let again = resolve_all(&graph, &mut thawed, &db, true, StitcherConfig::default());
+    assert_eq!(expected, again);
+}
+
+#[test]
+fn a_scope_in_an_overlay_rolls_back_and_leaves_the_base_unchanged() {
+    let graph = test_graphs::class_field_through_function_parameter::new::<StackGraph>();
+    let mut partials = PartialPaths::new();
+    let db = database_for(&graph, &mut partials);
+    let expected = resolve_all(&graph, &mut partials, &db, false, StitcherConfig::default());
+    let before = partials.allocated_cells();
+
+    let frozen = partials.freeze();
+    let mut overlay = frozen.overlay();
+    // Cells that a scope adds, and base reversals that it computes, are gone after the scope.
+    let first = overlay.with_scope(|scoped| {
+        let inner = resolve_all(&graph, scoped, &db, false, StitcherConfig::default());
+        assert!(scoped.allocated_cells() > before);
+        inner
+    });
+    assert_eq!(expected, first);
+    assert_eq!(before, overlay.allocated_cells());
+
+    // The scope also rolls back on a panic.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        overlay.with_scope(|scoped| {
+            resolve_all(&graph, scoped, &db, false, StitcherConfig::default());
+            panic!("stop")
+        })
+    }));
+    assert!(result.is_err());
+    assert_eq!(before, overlay.allocated_cells());
+
+    // The overlay works after the rollbacks, and the base is unchanged.
+    let second = resolve_all(&graph, &mut overlay, &db, false, StitcherConfig::default());
+    assert_eq!(expected, second);
+    drop(overlay);
+    let mut thawed = stack_graphs::partial::FrozenPartialPaths::thaw(frozen)
+        .ok()
+        .expect("no overlay is alive");
+    assert_eq!(before, thawed.allocated_cells());
+    let again = resolve_all(&graph, &mut thawed, &db, false, StitcherConfig::default());
+    assert_eq!(expected, again);
+}

@@ -2957,6 +2957,8 @@ pub struct PartialPaths {
     pub(crate) partial_symbol_stacks: DequeArena<PartialScopedSymbol>,
     pub(crate) partial_scope_stacks: DequeArena<Handle<Node>>,
     pub(crate) partial_path_edges: DequeArena<PartialPathEdge>,
+    /// The frozen base of an overlay.  It keeps the base alive while the overlay reads it.
+    base: Option<std::sync::Arc<FrozenPartialPaths>>,
 }
 
 impl PartialPaths {
@@ -2965,7 +2967,19 @@ impl PartialPaths {
             partial_symbol_stacks: Deque::new_arena(),
             partial_scope_stacks: Deque::new_arena(),
             partial_path_edges: Deque::new_arena(),
+            base: None,
         }
+    }
+
+    /// Freezes this collection, so that several threads can share it.  Each thread then works
+    /// in its own [`overlay`][FrozenPartialPaths::overlay].
+    pub fn freeze(self) -> std::sync::Arc<FrozenPartialPaths> {
+        assert!(self.base.is_none(), "an overlay cannot freeze");
+        assert!(
+            !self.partial_symbol_stacks.has_checkpoint(),
+            "freeze a collection outside of a scope"
+        );
+        std::sync::Arc::new(FrozenPartialPaths(self))
     }
 
     /// Returns the number of cells in the three arenas of this collection.  Each cell holds one
@@ -3020,8 +3034,45 @@ impl PartialPaths {
 
     #[cfg_attr(not(feature = "storage"), allow(dead_code))]
     pub(crate) fn clear(&mut self) {
+        assert!(self.base.is_none(), "an overlay cannot clear");
         self.partial_symbol_stacks.clear();
         self.partial_scope_stacks.clear();
         self.partial_path_edges.clear();
+    }
+}
+
+/// A frozen [`PartialPaths`] that several threads share.  No thread can change it.
+///
+/// A thread reads it through an [`overlay`][FrozenPartialPaths::overlay].  The overlay is a
+/// plain `PartialPaths` that adds new cells to its own arenas.  The handles of the frozen cells
+/// stay valid in the overlay, so the paths of a [`Database`][crate::stitching::Database] that
+/// the frozen collection built stay valid too.  The first new handle of an overlay is the one
+/// that the frozen collection would give next, so a search in an overlay gives the same handles
+/// and the same cell counts as a search in the collection itself.
+pub struct FrozenPartialPaths(PartialPaths);
+
+// A frozen collection never changes: no one has `&mut` access, and an overlay keeps the
+// reversals of frozen cells in its own map.  The `Cell`s of the frozen cells are only read.
+unsafe impl Send for FrozenPartialPaths {}
+unsafe impl Sync for FrozenPartialPaths {}
+
+impl FrozenPartialPaths {
+    /// Creates an empty overlay.  The overlay keeps this collection alive.
+    pub fn overlay(self: &std::sync::Arc<Self>) -> PartialPaths {
+        let base = &self.0;
+        // SAFETY: the overlay holds an `Arc` of the base, and no one can change a frozen base.
+        unsafe {
+            PartialPaths {
+                partial_symbol_stacks: base.partial_symbol_stacks.overlay(),
+                partial_scope_stacks: base.partial_scope_stacks.overlay(),
+                partial_path_edges: base.partial_path_edges.overlay(),
+                base: Some(std::sync::Arc::clone(self)),
+            }
+        }
+    }
+
+    /// Gives back the collection when no overlay and no other `Arc` holds it.
+    pub fn thaw(this: std::sync::Arc<Self>) -> Result<PartialPaths, std::sync::Arc<Self>> {
+        std::sync::Arc::try_unwrap(this).map(|frozen| frozen.0)
     }
 }
