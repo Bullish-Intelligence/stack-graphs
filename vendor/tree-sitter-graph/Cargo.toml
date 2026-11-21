@@ -1,8 +1,12 @@
-# This is a local copy of tree-sitter-graph 0.12.0 from crates.io. It has one change.
-# The syntax node identifier in `src/graph.rs` has the type `usize`. The upstream type is `u32`.
-# Upstream cuts the address of a tree-sitter node to 32 bits. Two nodes of one tree can get the
-# same identifier when the heap spans more than 4 GiB. The execution then fails with
-# "Duplicate variable" or reads the wrong node. This copy has no binary and no tests.
+# This is a local copy of tree-sitter-graph 0.12.0 from crates.io. It has two changes.
+# 1. The syntax node identifier in `src/graph.rs` has the type `usize`. The upstream type is `u32`.
+#    Upstream cuts the address of a tree-sitter node to 32 bits. Two nodes of one tree can get the
+#    same identifier when the heap spans more than 4 GiB. The execution then fails with
+#    "Duplicate variable" or reads the wrong node.
+# 2. `replace` in `src/functions.rs` keeps each compiled regex in a cache of the thread. Upstream
+#    compiles the pattern on each call.
+# This copy has no binary. Its only tests are the unit tests of the regex cache.
+# Run them with `cargo test -p tree-sitter-graph`.
 
 [package]
 edition = "2018"
@@ -18,7 +22,7 @@ repository = "https://github.com/tree-sitter/tree-sitter-graph/"
 [lib]
 name = "tree_sitter_graph"
 path = "src/lib.rs"
-test = false
+test = true
 doctest = false
 
 [dependencies]

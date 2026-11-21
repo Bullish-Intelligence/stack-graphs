@@ -557,6 +557,62 @@ pub mod stdlib {
             }
         }
 
+        /// The most patterns that one thread keeps compiled. A full cache is cleared before the
+        /// next insert, so a script that builds a new pattern on each call cannot grow it.
+        const REGEX_CACHE_LIMIT: usize = 256;
+
+        thread_local! {
+            /// Compiled patterns of `replace`, by pattern text. Each thread has its own cache,
+            /// so there is no lock and no shared state between the threads of a caller.
+            static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<String, Regex>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+
+        /// Returns the compiled form of `pattern`. A pattern compiles once for each thread.
+        /// A pattern that does not compile is not cached.
+        fn cached_regex(pattern: &str) -> Result<Regex, regex::Error> {
+            REGEX_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if let Some(regex) = cache.get(pattern) {
+                    return Ok(regex.clone());
+                }
+                let regex = Regex::new(pattern)?;
+                if cache.len() >= REGEX_CACHE_LIMIT {
+                    cache.clear();
+                }
+                cache.insert(pattern.to_string(), regex.clone());
+                Ok(regex)
+            })
+        }
+
+        #[cfg(test)]
+        mod regex_cache_tests {
+            use super::*;
+
+            #[test]
+            fn cached_regex_replaces_like_a_fresh_regex() {
+                let first = cached_regex("[ab]+").unwrap();
+                let second = cached_regex("[ab]+").unwrap();
+                assert_eq!(first.replace_all("xaby", "-"), "x-y");
+                assert_eq!(second.replace_all("xaby", "-"), "x-y");
+                assert_eq!(first.as_str(), second.as_str());
+            }
+
+            #[test]
+            fn cached_regex_does_not_cache_a_bad_pattern() {
+                assert!(cached_regex("(").is_err());
+                assert!(cached_regex("(").is_err());
+            }
+
+            #[test]
+            fn cached_regex_stays_below_its_limit() {
+                for i in 0..(REGEX_CACHE_LIMIT * 3) {
+                    cached_regex(&format!("p{}", i)).unwrap();
+                }
+                REGEX_CACHE.with(|cache| assert!(cache.borrow().len() <= REGEX_CACHE_LIMIT));
+            }
+        }
+
         /// The implementation of the standard [`replace`][`crate::reference::functions#replace`] function.
         pub struct Replace;
 
@@ -569,7 +625,7 @@ pub mod stdlib {
             ) -> Result<Value, ExecutionError> {
                 let text = parameters.param()?.into_string()?;
                 let pattern = parameters.param()?.into_string()?;
-                let pattern = Regex::new(&pattern).map_err(|e| {
+                let pattern = cached_regex(&pattern).map_err(|e| {
                     ExecutionError::FunctionFailed("replace".into(), format!("{}", e))
                 })?;
                 let replacement = parameters.param()?.into_string()?;
