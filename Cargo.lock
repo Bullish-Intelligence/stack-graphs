@@ -2244,8 +2244,6 @@ dependencies = [
 [[package]]
 name = "tree-sitter-graph"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63f86eb73c7d891c4b9b6fe4d4e63dd94c506e4788af7c2296afdcfbeea626cc"
 dependencies = [
  "colored",
  "log",

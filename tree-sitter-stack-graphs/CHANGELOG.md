@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LanguageConfiguration::shadow_aware_similar_paths` asks the path stitcher for shadow aware similar path detection. The test runner and the indexer set the option of the stitcher from it. `FileLanguageConfigurations::shadow_aware_similar_paths` reports it for a file.
 - `StackGraphLanguage::set_contract_graph` and `StackGraphLanguage::contract_graph` control the simplification of the graph of each file. At the end of each build, the builder calls `StackGraph::simplify_file`. The default is on. On a large Python project, this halves the arena cells of the file phase and lowers the peak memory. Call `set_contract_graph(false)` to keep the graph as the rules build it.
 - A `push_symbol_node` accepts the attribute `syntax_type`. The path stitcher reads it for the reference at an attribute store. See `StitcherConfig::with_shadow_aware_similar_paths` in `stack-graphs`.
+- The crate uses a local copy of `tree-sitter-graph` 0.12.0 in `vendor/tree-sitter-graph`. Upstream cuts the address of a syntax node to 32 bits and uses it as the node identifier. Two nodes of one tree can get the same identifier when the heap spans more than 4 GiB. The build of a graph then failed with "Duplicate variable" or read the wrong node, in rare and load dependent cases. The copy keeps the full address.
 
 ## v0.10.0 -- 2024-12-12
 

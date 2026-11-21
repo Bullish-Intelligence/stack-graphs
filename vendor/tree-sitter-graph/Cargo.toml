@@ -1,0 +1,36 @@
+# This is a local copy of tree-sitter-graph 0.12.0 from crates.io. It has one change.
+# The syntax node identifier in `src/graph.rs` has the type `usize`. The upstream type is `u32`.
+# Upstream cuts the address of a tree-sitter node to 32 bits. Two nodes of one tree can get the
+# same identifier when the heap spans more than 4 GiB. The execution then fails with
+# "Duplicate variable" or reads the wrong node. This copy has no binary and no tests.
+
+[package]
+edition = "2018"
+name = "tree-sitter-graph"
+version = "0.12.0"
+authors = ["Douglas Creager <dcreager@dcreager.net>"]
+description = "Construct graphs from parsed source code"
+homepage = "https://github.com/tree-sitter/tree-sitter-graph/"
+readme = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tree-sitter/tree-sitter-graph/"
+
+[lib]
+name = "tree_sitter_graph"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[dependencies]
+colored = { version = "2", optional = true }
+log = "0.4"
+regex = "1.3.2"
+serde = "1.0"
+serde_json = "1.0"
+smallvec = { version = "1.6", features = ["union"] }
+streaming-iterator = "0.1.9"
+thiserror = "1.0.7"
+tree-sitter = "0.24"
+
+[features]
+term-colors = ["colored"]
