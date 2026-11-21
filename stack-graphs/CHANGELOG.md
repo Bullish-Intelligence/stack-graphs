@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PartialPath::shadows_both_ways` and `PartialPathEdgeList::shadows_both_ways` tell in one pass if a path shadows another path, and if the other path shadows it. They give the same answers as two calls of `shadows`. If both edge lists are stored backwards, the pass stops at the first cell that both lists share, because the edges before it are equal. Shadow aware similar path detection uses them, so it walks the edges of two paths once instead of twice, and only up to the point where the paths differ. `PartialPath::can_be_shadowed` no longer allocates on the heap for a path of up to 64 edges, and it looks up each node of the path once. The results do not change.
 - `PartialPathEdgeList::shadows` and `PartialSymbolStack::apply_partial_bindings` no longer copy a list in the arena when the list is stored backwards, as a path that a stitcher extends is. Similar path detection costs less time and arena cells on long paths. The results do not change.
 - `Database::find_candidate_partial_paths` and `find_candidate_partial_paths_from_root` take `&self`. `DatabaseCandidates::new` takes `&Database`. Queries no longer change the database.
 

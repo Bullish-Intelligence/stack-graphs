@@ -724,6 +724,14 @@ impl<T> ReversibleList<T> {
         }
     }
 
+    /// Returns whether two lists are the same list: both start at the same cell, so they hold
+    /// the same elements.  Two different lists can hold the same elements, too, so `false` says
+    /// nothing about the elements.
+    #[inline(always)]
+    pub fn is_same_list(&self, other: &ReversibleList<T>) -> bool {
+        self.cells == other.cells
+    }
+
     /// Returns whether we have already calculated the reversal of this list.
     pub fn have_reversal(&self, arena: &ReversibleListArena<T>) -> bool {
         if self.is_empty() {
@@ -1129,11 +1137,21 @@ where
         &self,
         arena: &'a DequeArena<T>,
     ) -> Option<impl Iterator<Item = &'a T> + 'a> {
+        Some(self.list_reversed_if_cached(arena)?.iter(arena))
+    }
+
+    /// Returns the backwards-facing list of this deque, under the same condition as
+    /// [`iter_reversed_if_cached`][].  The list shares its cells with every deque that was built
+    /// from the same deque by pushes onto the back.  Use [`ReversibleList::is_same_list`][] to
+    /// find the shared cells.
+    ///
+    /// [`iter_reversed_if_cached`]: #method.iter_reversed_if_cached
+    pub fn list_reversed_if_cached(&self, arena: &DequeArena<T>) -> Option<ReversibleList<T>> {
         let mut list = self.list;
         if self.is_forwards() && list.reverse_reused(arena).is_err() {
             return None;
         }
-        Some(list.iter(arena))
+        Some(list)
     }
 
     /// Ensures that both deques are stored in the same direction.  It doesn't matter _which_

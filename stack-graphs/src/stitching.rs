@@ -1243,9 +1243,11 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
                         if !left.equals(ps, right) {
                             None
                         } else {
-                            if left.shadows(ps, right) {
+                            // One pass decides both directions.
+                            let (left_shadows, right_shadows) = left.shadows_both_ways(ps, right);
+                            if left_shadows {
                                 Some(Ordering::Less)
-                            } else if right.shadows(ps, left) {
+                            } else if right_shadows {
                                 Some(Ordering::Greater)
                             } else {
                                 Some(Ordering::Equal)

@@ -1659,6 +1659,68 @@ impl PartialPathEdgeList {
         false
     }
 
+    /// Returns whether this edge list shadows `other`, and whether `other` shadows this list, in
+    /// this order.  The answer is the same as two calls of [`shadows`][PartialPathEdgeList::shadows].
+    /// It costs one pass instead of two.  If both lists are stored backwards, the pass also stops
+    /// at the first cell that both lists share, because the edges before it are equal.  Two paths
+    /// that a stitcher builds from one path share all the cells of that path.
+    pub fn shadows_both_ways(
+        self,
+        partials: &mut PartialPaths,
+        other: PartialPathEdgeList,
+    ) -> (bool, bool) {
+        if let Some(result) = self.shadows_both_ways_without_reversal(partials, other) {
+            return result;
+        }
+        (self.shadows(partials, other), other.shadows(partials, self))
+    }
+
+    /// Decides [`shadows_both_ways`][PartialPathEdgeList::shadows_both_ways] in one pass from the
+    /// back to the front of both lists, like
+    /// [`shadows_without_reversal`][PartialPathEdgeList::shadows_without_reversal].  Both answers
+    /// follow the same rule: a position where the nodes differ sets the answer to `false`, and a
+    /// position where a list has the higher precedence at the same node sets the answer of that
+    /// list to `true`.  The position nearest to the front wins.  Returns `None` if a list has no
+    /// usable direction.
+    fn shadows_both_ways_without_reversal(
+        self,
+        partials: &PartialPaths,
+        other: PartialPathEdgeList,
+    ) -> Option<(bool, bool)> {
+        let arena = &partials.partial_path_edges;
+        let mut self_edges = self.edges.list_reversed_if_cached(arena)?;
+        let mut other_edges = other.edges.list_reversed_if_cached(arena)?;
+        // Only the positions that both lists have can decide.  Skip the extra edges at the back
+        // of the longer list.
+        let common = std::cmp::min(self.len(), other.len());
+        for _ in common..self.len() {
+            self_edges.pop_front(arena);
+        }
+        for _ in common..other.len() {
+            other_edges.pop_front(arena);
+        }
+        let mut self_shadows = false;
+        let mut other_shadows = false;
+        // Both lists have `common` edges left.  If they share a cell, all edges from there to the
+        // front are equal, and they decide nothing.
+        while !self_edges.is_same_list(&other_edges) {
+            let (self_edge, other_edge) =
+                match (self_edges.pop_front(arena), other_edges.pop_front(arena)) {
+                    (Some(self_edge), Some(other_edge)) => (self_edge, other_edge),
+                    _ => break,
+                };
+            if self_edge.source_node_id != other_edge.source_node_id {
+                self_shadows = false;
+                other_shadows = false;
+            } else if self_edge.precedence > other_edge.precedence {
+                self_shadows = true;
+            } else if other_edge.precedence > self_edge.precedence {
+                other_shadows = true;
+            }
+        }
+        Some((self_shadows, other_shadows))
+    }
+
     /// Decides [`shadows`][PartialPathEdgeList::shadows] in one pass from the back to the front of
     /// both lists.  This needs no new arena cells, if both lists are stored backwards, or have
     /// cached their reversal.  A path stitcher extends a path at the back, so its edge lists have
@@ -1873,6 +1935,17 @@ impl PartialPath {
         self.edges.shadows(partials, other.edges)
     }
 
+    /// Returns whether this path shadows `other`, and whether `other` shadows this path, in this
+    /// order.  The answer is the same as two calls of [`shadows`][PartialPath::shadows], but it
+    /// costs less on long paths.
+    pub fn shadows_both_ways(
+        &self,
+        partials: &mut PartialPaths,
+        other: &PartialPath,
+    ) -> (bool, bool) {
+        self.edges.shadows_both_ways(partials, other.edges)
+    }
+
     /// Returns whether another path can shadow this path, or a path that extends it.  The answer
     /// `true` is always correct, but the answer `false` means that the path has no sibling that
     /// can win.
@@ -1890,25 +1963,27 @@ impl PartialPath {
             .symbol_stack_precondition
             .iter(partials)
             .map(|symbol| symbol.symbol)
-            .collect::<Vec<_>>();
+            .collect::<SmallVec<[_; 16]>>();
         stack.reverse();
         let below_is_unknown = self.symbol_stack_precondition.has_variable();
         // The start node acts on the stack, too.
-        match &graph[self.start_node] {
-            Node::PushSymbol(push) => stack.push(push.symbol),
-            Node::PushScopedSymbol(push) => stack.push(push.symbol),
-            Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
-                stack.pop();
-            }
-            _ => {}
-        }
-        let edges = self.edges.to_vec(partials);
-        for (index, edge) in edges.iter().enumerate() {
-            let source = match graph.node_for_id(edge.source_node_id) {
+        Self::act_on_stack(&mut stack, &graph[self.start_node]);
+        let edges = self
+            .edges
+            .edges
+            .to_smallvec::<64>(&partials.partial_path_edges);
+        let mut edges = edges.iter().peekable();
+        let mut source = match edges.peek() {
+            Some(edge) => match graph.node_for_id(edge.source_node_id) {
                 Some(source) => source,
                 None => return true,
-            };
-            let sink = match edges.get(index + 1) {
+            },
+            None => return false,
+        };
+        while let Some(edge) = edges.next() {
+            // The sink of an edge is the source of the next edge.  The last edge ends at the end
+            // node of the path.
+            let sink = match edges.peek() {
                 Some(next) => match graph.node_for_id(next.source_node_id) {
                     Some(sink) => sink,
                     None => return true,
@@ -1928,16 +2003,24 @@ impl PartialPath {
                     return true;
                 }
             }
-            match &graph[sink] {
-                Node::PushSymbol(push) => stack.push(push.symbol),
-                Node::PushScopedSymbol(push) => stack.push(push.symbol),
-                Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
-                    stack.pop();
-                }
-                _ => {}
-            }
+            Self::act_on_stack(&mut stack, &graph[sink]);
+            source = sink;
         }
         false
+    }
+
+    /// Applies the effect of a node on the symbol stack that [`can_be_shadowed`][] follows.
+    ///
+    /// [`can_be_shadowed`]: #method.can_be_shadowed
+    fn act_on_stack(stack: &mut SmallVec<[Handle<crate::graph::Symbol>; 16]>, node: &Node) {
+        match node {
+            Node::PushSymbol(push) => stack.push(push.symbol),
+            Node::PushScopedSymbol(push) => stack.push(push.symbol),
+            Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
+                stack.pop();
+            }
+            _ => {}
+        }
     }
 
     /// Returns whether a path that starts at `sink` can pop `top` from the symbol stack.  If `top`
@@ -1952,8 +2035,9 @@ impl PartialPath {
         below_is_unknown: bool,
     ) -> bool {
         const BUDGET: usize = 64;
-        let mut seen = Vec::<Handle<Node>>::new();
-        let mut work = vec![sink];
+        let mut seen = SmallVec::<[Handle<Node>; BUDGET]>::new();
+        let mut work = SmallVec::<[Handle<Node>; 16]>::new();
+        work.push(sink);
         while let Some(node) = work.pop() {
             if seen.contains(&node) {
                 continue;

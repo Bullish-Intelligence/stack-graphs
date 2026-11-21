@@ -1102,3 +1102,439 @@ fn applying_bindings_to_a_stack_that_the_stitcher_builds_needs_no_reversal() {
         assert!(result.equals(&mut partials, stack));
     }
 }
+
+/// Lists that share their first edges, as the paths of one stitcher run do.  Each pair holds a
+/// common prefix, and two different tails.  The reference answer comes from the plain sequences.
+#[test]
+fn shadowing_both_ways_is_what_the_reference_says_in_every_direction() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    let sequences = all_edge_sequences();
+    for left in sequences.iter().step_by(7) {
+        for right in sequences.iter().step_by(5) {
+            let expected = (expected_shadows(left, right), expected_shadows(right, left));
+            for (left_forwards, right_forwards) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let l = edge_list(&mut graph, &mut partials, left, left_forwards);
+                let r = edge_list(&mut graph, &mut partials, right, right_forwards);
+                assert_eq!(
+                    expected,
+                    l.shadows_both_ways(&mut partials, r),
+                    "{:?} and {:?}, forwards: {} {}",
+                    left,
+                    right,
+                    left_forwards,
+                    right_forwards
+                );
+            }
+        }
+    }
+}
+
+/// Appends `tail` to a copy of `base`, at the back.  The result shares the cells of `base`.
+fn extend_list(
+    graph: &mut StackGraph,
+    partials: &mut PartialPaths,
+    base: PartialPathEdgeList,
+    tail: &[(u32, i32)],
+) -> PartialPathEdgeList {
+    let file = graph.get_or_create_file("edges");
+    let mut list = base;
+    for (id, precedence) in tail {
+        list.push_back(
+            partials,
+            stack_graphs::partial::PartialPathEdge {
+                source_node_id: NodeID::new_in_file(file, *id),
+                precedence: *precedence,
+            },
+        );
+    }
+    list
+}
+
+#[test]
+fn shadowing_both_ways_of_lists_that_share_a_prefix_is_what_the_reference_says() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    let sequences = all_edge_sequences();
+    // The prefixes include a precedence difference that decides, so that a wrong skip of the
+    // shared cells changes the answer.
+    for prefix in sequences.iter().step_by(11) {
+        let base = edge_list(&mut graph, &mut partials, prefix, false);
+        for left_tail in sequences.iter().step_by(13).take(30) {
+            for right_tail in sequences.iter().step_by(17).take(30) {
+                let l = extend_list(&mut graph, &mut partials, base, left_tail);
+                let r = extend_list(&mut graph, &mut partials, base, right_tail);
+                let left = [prefix.as_slice(), left_tail.as_slice()].concat();
+                let right = [prefix.as_slice(), right_tail.as_slice()].concat();
+                assert_eq!(
+                    (
+                        expected_shadows(&left, &right),
+                        expected_shadows(&right, &left)
+                    ),
+                    l.shadows_both_ways(&mut partials, r),
+                    "{:?} and {:?}",
+                    left,
+                    right
+                );
+                // The lists must also agree with the one-direction method.
+                assert_eq!(
+                    expected_shadows(&left, &right),
+                    l.shadows(&mut partials, r),
+                    "{:?} shadows {:?}",
+                    left,
+                    right
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn shadowing_both_ways_can_hold_in_both_directions() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    // Each direction has its own deciding position: the first for the left list, and the second
+    // for the right list.  The left list decides at the front, and the right list does not
+    // decide before it.  So the right list decides at the second position only.
+    let left = edge_list(&mut graph, &mut partials, &[(1, 1), (2, 0)], false);
+    let right = edge_list(&mut graph, &mut partials, &[(1, 0), (2, 1)], false);
+    assert_eq!((true, true), left.shadows_both_ways(&mut partials, right));
+    // The position nearest to the front decides, so a later node change does not undo it.
+    let left = edge_list(&mut graph, &mut partials, &[(1, 1), (2, 0)], false);
+    let right = edge_list(&mut graph, &mut partials, &[(1, 0), (1, 0)], false);
+    assert_eq!((true, false), left.shadows_both_ways(&mut partials, right));
+    // An earlier node change decides "no" in both directions, over a later precedence.
+    let left = edge_list(&mut graph, &mut partials, &[(1, 0), (2, 1)], false);
+    let right = edge_list(&mut graph, &mut partials, &[(3, 0), (2, 0)], false);
+    assert_eq!((false, false), left.shadows_both_ways(&mut partials, right));
+}
+
+#[test]
+fn shadowing_both_ways_of_stitcher_lists_needs_no_new_cells() {
+    let mut graph = StackGraph::new();
+    let mut partials = PartialPaths::new();
+    let base = edge_list(&mut graph, &mut partials, &[(1, 0), (2, 0)], false);
+    let left = extend_list(&mut graph, &mut partials, base, &[(1, 1), (2, 2)]);
+    let right = extend_list(&mut graph, &mut partials, base, &[(1, 0), (2, 0)]);
+    let cells = partials.allocated_cells();
+    assert_eq!((true, false), left.shadows_both_ways(&mut partials, right));
+    assert_eq!(cells, partials.allocated_cells());
+}
+
+/// A graph for the tests of `can_be_shadowed`.  The path under test is
+/// `reference (push x) -> scope -> definition (pop x)`.  The test adds rival edges.
+struct ShadowGraph {
+    graph: StackGraph,
+    file: stack_graphs::arena::Handle<stack_graphs::graph::File>,
+    reference: Handle<Node>,
+    scope: Handle<Node>,
+    definition: Handle<Node>,
+}
+
+impl ShadowGraph {
+    fn new() -> ShadowGraph {
+        let mut graph = StackGraph::new();
+        let file = graph.add_file("shadow").unwrap();
+        let reference = create_push_symbol_node(&mut graph, file, "x", true);
+        let scope = create_scope_node(&mut graph, file, false);
+        let definition = create_pop_symbol_node(&mut graph, file, "x", true);
+        ShadowGraph {
+            graph,
+            file,
+            reference,
+            scope,
+            definition,
+        }
+    }
+
+    /// Makes the path with the precedence of its two edges.
+    fn path(&mut self, partials: &mut PartialPaths, precedences: [i32; 2]) -> PartialPath {
+        let nodes = [self.reference, self.scope, self.definition];
+        let mut path = PartialPath::from_node(&self.graph, partials, nodes[0]);
+        for (index, precedence) in precedences.iter().enumerate() {
+            let edge = stack_graphs::graph::Edge {
+                source: nodes[index],
+                sink: nodes[index + 1],
+                precedence: *precedence,
+            };
+            self.graph.add_edge(edge.source, edge.sink, edge.precedence);
+            path.append(&self.graph, partials, edge).unwrap();
+        }
+        path
+    }
+
+    fn can_be_shadowed(&self, partials: &mut PartialPaths, path: &PartialPath) -> bool {
+        path.can_be_shadowed(&self.graph, partials)
+    }
+}
+
+#[test]
+fn a_path_without_rival_edges_cannot_be_shadowed() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let path = g.path(&mut partials, [0, 0]);
+    assert!(!g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn an_empty_path_cannot_be_shadowed() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let path = PartialPath::from_node(&g.graph, &mut partials, g.reference);
+    assert!(!g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_rival_edge_of_a_higher_precedence_to_a_matching_pop_shadows() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+    g.graph.add_edge(g.scope, rival, 1);
+    let path = g.path(&mut partials, [0, 0]);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_rival_edge_of_the_second_edge_position_is_found() {
+    // The rival leaves the first node of the path, not the scope.
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+    g.graph.add_edge(g.reference, rival, 1);
+    let path = g.path(&mut partials, [0, 0]);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_rival_edge_that_is_not_higher_cannot_shadow() {
+    for rival_precedence in [-1, 0] {
+        let mut g = ShadowGraph::new();
+        let mut partials = PartialPaths::new();
+        let rival = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+        g.graph.add_edge(g.scope, rival, rival_precedence);
+        let path = g.path(&mut partials, [0, 0]);
+        assert!(
+            !g.can_be_shadowed(&mut partials, &path),
+            "rival precedence {}",
+            rival_precedence
+        );
+    }
+}
+
+#[test]
+fn a_rival_edge_must_be_higher_than_the_edge_that_the_path_takes() {
+    // The path takes its edge at the scope with precedence 2.  A rival of precedence 2 does not
+    // shadow it, and a rival of precedence 3 does.
+    for (rival_precedence, expected) in [(2, false), (3, true)] {
+        let mut g = ShadowGraph::new();
+        let mut partials = PartialPaths::new();
+        let rival = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+        g.graph.add_edge(g.scope, rival, rival_precedence);
+        let path = g.path(&mut partials, [0, 2]);
+        assert_eq!(
+            expected,
+            g.can_be_shadowed(&mut partials, &path),
+            "rival precedence {}",
+            rival_precedence
+        );
+    }
+}
+
+#[test]
+fn a_rival_edge_to_a_pop_of_another_symbol_cannot_shadow() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "y", true);
+    g.graph.add_edge(g.scope, rival, 1);
+    let path = g.path(&mut partials, [0, 0]);
+    assert!(!g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_rival_edge_follows_scope_nodes_to_a_pop() {
+    for (symbol, expected) in [("x", true), ("y", false)] {
+        let mut g = ShadowGraph::new();
+        let mut partials = PartialPaths::new();
+        let middle = create_scope_node(&mut g.graph, g.file, false);
+        let last = create_scope_node(&mut g.graph, g.file, false);
+        let rival = create_pop_symbol_node(&mut g.graph, g.file, symbol, true);
+        g.graph.add_edge(g.scope, middle, 1);
+        g.graph.add_edge(middle, last, 0);
+        g.graph.add_edge(last, rival, 0);
+        let path = g.path(&mut partials, [0, 0]);
+        assert_eq!(
+            expected,
+            g.can_be_shadowed(&mut partials, &path),
+            "symbol {}",
+            symbol
+        );
+    }
+}
+
+#[test]
+fn a_rival_edge_to_a_node_that_is_not_a_scope_or_a_pop_may_shadow() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_push_symbol_node(&mut g.graph, g.file, "z", false);
+    g.graph.add_edge(g.scope, rival, 1);
+    let path = g.path(&mut partials, [0, 0]);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_rival_search_that_runs_out_of_budget_may_shadow() {
+    // A chain of 70 scope nodes with no pop: the search gives up and says "may shadow".
+    // A short chain of the same shape that ends in a pop of another symbol says "cannot".
+    for (length, expected) in [(70, true), (10, false)] {
+        let mut g = ShadowGraph::new();
+        let mut partials = PartialPaths::new();
+        let mut previous = g.scope;
+        let mut precedence = 1;
+        for _ in 0..length {
+            let next = create_scope_node(&mut g.graph, g.file, false);
+            g.graph.add_edge(previous, next, precedence);
+            previous = next;
+            precedence = 0;
+        }
+        if length < 64 {
+            let rival = create_pop_symbol_node(&mut g.graph, g.file, "y", true);
+            g.graph.add_edge(previous, rival, 0);
+        }
+        let path = g.path(&mut partials, [0, 0]);
+        assert_eq!(
+            expected,
+            g.can_be_shadowed(&mut partials, &path),
+            "chain of {}",
+            length
+        );
+    }
+}
+
+#[test]
+fn the_symbol_stack_follows_the_edges_of_the_path() {
+    // The path starts at the scope, and the definition pops x.  So the precondition holds x, and
+    // the stack at the scope has x on top.
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "y", true);
+    g.graph.add_edge(g.scope, rival, 1);
+    let mut path = PartialPath::from_node(&g.graph, &mut partials, g.scope);
+    let edge = stack_graphs::graph::Edge {
+        source: g.scope,
+        sink: g.definition,
+        precedence: 0,
+    };
+    g.graph.add_edge(edge.source, edge.sink, edge.precedence);
+    path.append(&g.graph, &mut partials, edge).unwrap();
+    // The rival pops y, and the top is x.
+    assert!(!g.can_be_shadowed(&mut partials, &path));
+
+    // A rival that pops x matches the x that the path needs.
+    let rival_x = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+    g.graph.add_edge(g.scope, rival_x, 1);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_path_with_an_unknown_stack_and_no_symbol_on_top_can_be_shadowed_by_any_pop() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let a = create_scope_node(&mut g.graph, g.file, false);
+    let b = create_scope_node(&mut g.graph, g.file, false);
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "y", true);
+    g.graph.add_edge(a, rival, 1);
+    let mut path = PartialPath::from_node(&g.graph, &mut partials, a);
+    let edge = stack_graphs::graph::Edge {
+        source: a,
+        sink: b,
+        precedence: 0,
+    };
+    g.graph.add_edge(a, b, 0);
+    path.append(&g.graph, &mut partials, edge).unwrap();
+    // The precondition has a variable: the stack below is unknown, so the pop can match.
+    assert!(g.can_be_shadowed(&mut partials, &path));
+    // With no variable, the stack is empty, and no pop can match.
+    path.eliminate_precondition_stack_variables(&mut partials);
+    assert!(!g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn a_path_over_an_edge_from_a_missing_node_may_be_shadowed() {
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let mut path = g.path(&mut partials, [0, 0]);
+    let file = g.graph.get_or_create_file("elsewhere");
+    let missing = stack_graphs::partial::PartialPathEdge {
+        source_node_id: NodeID::new_in_file(file, 999),
+        precedence: 0,
+    };
+    // Last edge: the node of the edge is missing.
+    path.edges.push_back(&mut partials, missing);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+    // First edge: the node of the first edge is missing.
+    let mut path = PartialPath::from_node(&g.graph, &mut partials, g.reference);
+    path.edges.push_back(&mut partials, missing);
+    assert!(g.can_be_shadowed(&mut partials, &path));
+}
+
+#[test]
+fn can_be_shadowed_reads_a_list_in_both_directions() {
+    // A path whose edge list is stored forwards gives the same answer as one stored backwards.
+    let mut g = ShadowGraph::new();
+    let mut partials = PartialPaths::new();
+    let rival = create_pop_symbol_node(&mut g.graph, g.file, "x", true);
+    g.graph.add_edge(g.scope, rival, 1);
+    let mut path = g.path(&mut partials, [0, 0]);
+    let backwards = g.can_be_shadowed(&mut partials, &path);
+    let first = path.edges.pop_front(&mut partials).unwrap();
+    path.edges.push_front(&mut partials, first);
+    let forwards = g.can_be_shadowed(&mut partials, &path);
+    assert!(backwards);
+    assert_eq!(backwards, forwards);
+}
+
+#[test]
+fn the_symbol_stack_follows_the_pushes_and_pops_along_the_path() {
+    // The path is `push x -> pop x -> m -> push y -> a -> e`, with known stacks.  The stack at
+    // `m` is empty, and the stack at `a` has y on top.  A rival edge from a node can shadow only
+    // if it can reach a pop of the symbol that is on top at that node.
+    for (rival_at, symbol, expected) in [
+        ("m", "x", false),
+        ("m", "y", false),
+        ("a", "y", true),
+        ("a", "x", false),
+    ] {
+        let mut graph = StackGraph::new();
+        let mut partials = PartialPaths::new();
+        let file = graph.add_file("stack").unwrap();
+        let push_x = create_push_symbol_node(&mut graph, file, "x", true);
+        let pop_x = create_pop_symbol_node(&mut graph, file, "x", false);
+        let m = create_scope_node(&mut graph, file, false);
+        let push_y = create_push_symbol_node(&mut graph, file, "y", false);
+        let a = create_scope_node(&mut graph, file, false);
+        let e = create_scope_node(&mut graph, file, false);
+        let nodes = [push_x, pop_x, m, push_y, a, e];
+        let mut path = PartialPath::from_node(&graph, &mut partials, nodes[0]);
+        for pair in nodes.windows(2) {
+            let edge = stack_graphs::graph::Edge {
+                source: pair[0],
+                sink: pair[1],
+                precedence: 0,
+            };
+            graph.add_edge(edge.source, edge.sink, 0);
+            path.append(&graph, &mut partials, edge).unwrap();
+        }
+        path.eliminate_precondition_stack_variables(&mut partials);
+        let rival = create_pop_symbol_node(&mut graph, file, symbol, true);
+        graph.add_edge(if rival_at == "m" { m } else { a }, rival, 1);
+        assert_eq!(
+            expected,
+            path.can_be_shadowed(&graph, &mut partials),
+            "rival at {} pops {}",
+            rival_at,
+            symbol
+        );
+    }
+}
