@@ -42,7 +42,8 @@ pub const STUB_ROOT_PATH: &str = "<stubs>/";
 /// the builtins graph can build the stub modules itself with [`build_stub_module_into`].
 #[derive(Clone, Copy, Debug)]
 pub struct StubModule {
-    /// The name of the module, as `import` writes it.
+    /// The name of the module, as `import` writes it. A dotted name, like `collections.abc`, is a
+    /// module in a package.
     pub module: &'static str,
     /// The path of the source file in this crate. It appears in messages only.
     pub path: &'static str,
@@ -52,18 +53,26 @@ pub struct StubModule {
 
 impl StubModule {
     /// The name of the file of the stub module in a stack graph: `STUB_ROOT_PATH`, the module
-    /// name, and `.py`. It cannot collide with a file of a project.
+    /// name, and `.py`. Each dot of the module name becomes a directory separator. It cannot
+    /// collide with a file of a project.
     pub fn file_name(&self) -> String {
-        format!("{}{}.py", STUB_ROOT_PATH, self.module)
+        format!("{}{}.py", STUB_ROOT_PATH, self.module.replace('.', "/"))
     }
 }
 
 /// The stub modules of this language.
-pub const STUB_MODULES: &[StubModule] = &[StubModule {
-    module: "typing",
-    path: "src/stubs/typing.py",
-    source: include_str!("../src/stubs/typing.py"),
-}];
+pub const STUB_MODULES: &[StubModule] = &[
+    StubModule {
+        module: "typing",
+        path: "src/stubs/typing.py",
+        source: include_str!("../src/stubs/typing.py"),
+    },
+    StubModule {
+        module: "collections.abc",
+        path: "src/stubs/collections/abc.py",
+        source: include_str!("../src/stubs/collections/abc.py"),
+    },
+];
 
 /// Build one stub module into `graph`. Return the file of the stub module.
 pub fn build_stub_module_into(

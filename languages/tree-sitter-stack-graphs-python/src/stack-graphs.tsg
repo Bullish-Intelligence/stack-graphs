@@ -3357,6 +3357,52 @@ inherit .narrow_scope
   edge instance -> @class.output
 }
 
+;; The class can be a name that a tuple of classes defines: `isinstance(x, FUNC_TYPES)` after
+;; `FUNC_TYPES = (FuncDef, Decorator)`, in the same file or in an imported module. The path pushes
+;; the marker "<cls>" after the instance. The tuple pops the marker and reaches each class. See
+;; "A tuple of classes as the value of a name". A name of a class has no such path, as the marker
+;; does not match its definition.
+
+(
+  (call
+    function: (identifier) @_isinstance
+    arguments: (argument_list
+      . (_)
+      . [
+        (identifier) @class
+        (attribute) @class
+      ] .)) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  node instance
+  node marker
+  attr (instance) push_scoped_symbol = "()", scope = @call.literal_scope
+  attr (marker) push_symbol = "<cls>"
+  edge @call.narrowed -> instance
+  edge instance -> marker
+  edge marker -> @class.output
+}
+
+;; A tuple of classes as the value of a name
+;;
+;; A tuple that a name defines pops the marker "<cls>" and reaches each element. Only an
+;; assignment to a single name has this edge: `FUNC_TYPES = (FuncDef, Decorator)`. The element is a
+;; class, a dotted name of a class, or a name of a class that the tuple holds.
+
+(assignment
+  left: (identifier)
+  right: [
+    (tuple (_) @element)
+    (expression_list (_) @element)
+  ] @tuple)
+{
+  node marker
+  attr (marker) pop_symbol = "<cls>"
+  edge @tuple.output -> marker
+  edge marker -> @element.output
+}
+
 ;; The guards
 
 ;; The right operand of `a and b` is narrowed by a guard in `a`.

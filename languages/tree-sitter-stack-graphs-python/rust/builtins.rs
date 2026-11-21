@@ -560,6 +560,65 @@ fn typing_class_has_its_methods() {
     assert_eq!(targets[0].0, "<stubs>/typing.py");
 }
 
+/// Check that the reference `name` resolves to the definition in the typing stub. The import
+/// statement in the `collections.abc` stub is a second definition of the same name.
+fn assert_abc_stub(source: &str, name: &str, definition: &str) {
+    let targets = resolve(source, name);
+    let class = Target::Stub("<stubs>/typing.py".to_string(), definition.to_string());
+    assert!(targets.contains(&class), "reference {} in:\n{}\n{:?}", name, source, targets);
+    for target in &targets {
+        assert!(
+            *target == class
+                || matches!(target, Target::Stub(file, line)
+                    if file == "<stubs>/collections/abc.py" && line.starts_with("from typing import ")),
+            "reference {} in:\n{}\n{:?}",
+            name,
+            source,
+            targets
+        );
+    }
+}
+
+#[test]
+fn from_import_of_a_collections_abc_name_resolves_to_the_typing_stub() {
+    let source = "from collections.abc import Mapping, Sequence, Iterator\n";
+    assert_abc_stub(source, "Mapping", "class Mapping(Collection, Generic):");
+    assert_abc_stub(source, "Sequence", "class Sequence(Reversible, Collection):");
+    assert_abc_stub(source, "Iterator", "class Iterator(Iterable, Protocol):");
+}
+
+#[test]
+fn collections_abc_set_is_the_abstract_set_of_typing() {
+    let source = "from collections.abc import Set\n";
+    assert_abc_stub(source, "Set", "class AbstractSet(Collection):");
+}
+
+#[test]
+fn imported_collections_abc_module_resolves_to_the_typing_stub() {
+    let source = "import collections.abc\n\nx: collections.abc.Mapping\n";
+    assert_abc_stub(source, "Mapping", "class Mapping(Collection, Generic):");
+}
+
+#[test]
+fn unknown_collections_abc_name_does_not_resolve() {
+    assert!(resolve_lines("from collections.abc import Nonexistent\n", "Nonexistent").is_empty());
+}
+
+#[test]
+fn collections_abc_annotations_have_the_members_of_the_class() {
+    for source in [
+        "from collections.abc import Mapping\n\ndef f(m: Mapping[str, int]):\n    m.keys\n",
+        "from collections.abc import Mapping\n\ndef f(m) -> Mapping[str, int]:\n    pass\n\nf(1).keys\n",
+        "import collections.abc\n\ndef f(m: collections.abc.Mapping):\n    m.keys\n",
+        "from collections.abc import Mapping\n\nclass A(Mapping):\n    pass\n\nA().keys\n",
+        "from collections.abc import Mapping\n\ndef f(m):\n    if isinstance(m, Mapping):\n        m.keys\n",
+    ] {
+        let targets = resolve_lines(source, "keys");
+        assert_eq!(targets.len(), 1, "in:\n{}\n{:?}", source, targets);
+        assert_eq!(targets[0].0, "<stubs>/typing.py", "in:\n{}", source);
+    }
+}
+
 #[test]
 fn local_name_shadows_a_typing_import() {
     let source = "from typing import List\n\nclass List:\n    pass\n\nx = List\n";

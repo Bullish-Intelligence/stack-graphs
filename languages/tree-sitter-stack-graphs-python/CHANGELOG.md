@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The language builds graphs with contraction on. See `StackGraphLanguage::set_contract_graph` in `tree-sitter-stack-graphs`. The graphs are smaller, and the results do not change in the tests.
 
+- The second stub module is `collections.abc`. `from collections.abc import Mapping`, `import collections.abc`, and `collections.abc.Mapping` in an annotation, a base class, or `isinstance` resolve to the class in the `typing` stub. `collections.abc.Set` is `typing.AbstractSet`. `StubModule::file_name()` turns each dot of a module name into a directory separator. Before this change these names had no path, so an annotation such as `-> Mapping[str, X]` lost its target. On mypy 1.19.1 this resolves 616 more reference positions and 6 listed rows. Precision falls by 0.01 point (95.60% to 95.59%). Rich and the standard library corpus keep their metrics. Four mypy references (`stubdoc.py`) become ambiguous, because `args: MutableSequence[str] = []` now also reaches the class of the annotation.
+
+- `isinstance(x, NAMES)` narrows `x` when `NAMES` is a name bound to a tuple of classes, such as `SYMBOL_FUNCBASE_TYPES = (OverloadedFuncDef, FuncDef)`. The tuple can be in the same file or in an imported module. Each class of the tuple gives a candidate. Only an assignment to a single name has the new edge. A tuple in another position has none. On mypy 1.19.1 this resolves 13 references that had no path (`messages.py:2971:22` and `2973:22` among them) to the members of the classes, and makes 5 more ambiguous because the two classes inherit the member from different bases.
+
 ## v0.3.0 -- 2024-12-12
 
 - The `tree-sitter-stack-graphs` dependency is updated to version 0.10.

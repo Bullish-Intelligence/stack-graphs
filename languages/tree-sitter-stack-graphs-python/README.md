@@ -20,7 +20,7 @@ Check out our [documentation](https://docs.rs/tree-sitter-stack-graphs-python/*/
 
 ## Stub modules
 
-The crate ships stubs of standard library modules, so that `import typing` and `from typing import List` resolve. `STUB_MODULES` lists them. Each stub is Python source in `src/stubs/`, derived from typeshed with `script/gen_stubs.py`.
+The crate ships stubs of standard library modules, so that `import typing`, `from typing import List`, and `from collections.abc import Mapping` resolve. `STUB_MODULES` lists them. Each stub is Python source in `src/stubs/`, derived from typeshed with `script/gen_stubs.py`.
 
 `language_configuration` adds every stub module to the `builtins` graph of the configuration. A tool that adds that graph to its own graph needs no more work.
 
@@ -30,7 +30,7 @@ A tool that builds the builtins itself must build each stub module as a file of 
 2. Set the `FILE_PATH` global to that name, and the `ROOT_PATH` global to `STUB_ROOT_PATH` (`<stubs>/`).
 3. Build the stub source with the Python rules, then add the partial paths of the file to the database.
 
-`build_stub_module_into` does steps 1 to 3 up to the graph. Add a stub module in `src/stubs/NAME.py`, then list it in `STUB_MODULES`.
+`build_stub_module_into` does steps 1 to 3 up to the graph. Add a stub module in `src/stubs/NAME.py` (`src/stubs/PACKAGE/NAME.py` for the module `PACKAGE.NAME`), then list it in `STUB_MODULES`. A stub can import names from another stub, as `collections.abc` does from `typing`.
 
 ## Using the Command-line Program
 
