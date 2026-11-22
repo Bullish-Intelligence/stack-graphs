@@ -15,7 +15,9 @@ use tree_sitter_stack_graphs::StackGraphLanguage;
 use tree_sitter_stack_graphs::Variables;
 use tree_sitter_stack_graphs::FILE_PATH_VAR;
 
-/// Incremental semantic lowering for the bounded Python prototype.
+/// Incremental semantic lowering for the bounded Python prototype. Needs the feature
+/// `incremental`.
+#[cfg(feature = "incremental")]
 pub mod incremental;
 
 /// The stack graphs tsg source for this language.

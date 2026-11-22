@@ -8,9 +8,10 @@ members = [
   "tree-sitter-stack-graphs",
   "languages/*",
 ]
+# The incremental prototype is a member, but not a default member: it pulls in salsa and a
+# bundled SQLite. Build it with `-p stack-graphs-incremental-prototype`.
 default-members = [
   "lsp-positions",
   "stack-graphs",
-  "incremental-prototype",
   "tree-sitter-stack-graphs",
 ]
