@@ -195,6 +195,18 @@ where
     A: Appendable,
 {
     fn get_appendable<'a>(&'a self, handle: &'a H) -> &'a A;
+
+    /// The symbols at the front of the symbol stack precondition of an appendable, after `skip`
+    /// symbols. A database can override this to answer from a table that it fills in advance.
+    fn precondition_leading_symbols(
+        &self,
+        handle: &H,
+        partials: &mut PartialPaths,
+        skip: usize,
+    ) -> [Option<Handle<Symbol>>; JOIN_SYMBOLS] {
+        self.get_appendable(handle)
+            .precondition_leading_symbols(partials, skip)
+    }
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -313,6 +325,8 @@ pub struct Database {
     root_paths_by_precondition_without_variable:
         SupplementalArena<SymbolStackKeyCell, Vec<Handle<PartialPath>>>,
     incoming_paths: SupplementalArena<Node, Degree>,
+    /// The first `JOIN_SYMBOLS + 1` symbols of the precondition of each path, for the join test.
+    leading_symbols: SupplementalArena<PartialPath, [Option<Handle<Symbol>>; JOIN_SYMBOLS + 1]>,
 }
 
 impl Database {
@@ -328,6 +342,7 @@ impl Database {
             root_paths_by_precondition_with_variable: SupplementalArena::new(),
             root_paths_by_precondition_without_variable: SupplementalArena::new(),
             incoming_paths: SupplementalArena::new(),
+            leading_symbols: SupplementalArena::new(),
         }
     }
 
@@ -344,6 +359,7 @@ impl Database {
         self.root_paths_by_precondition_with_variable.clear();
         self.root_paths_by_precondition_without_variable.clear();
         self.incoming_paths.clear();
+        self.leading_symbols.clear();
     }
 
     /// Adds a partial path to this database.  We do not deduplicate partial paths in any way; it's
@@ -367,6 +383,8 @@ impl Database {
         );
         let symbol_stack_precondition = path.symbol_stack_precondition;
         let handle = self.partial_paths.add(path);
+        self.leading_symbols[handle] =
+            symbol_stack_precondition.leading_symbols::<{ JOIN_SYMBOLS + 1 }>(partials, 0);
 
         // If the partial path starts at the root node, index it by its symbol stack precondition.
         if graph[start_node].is_root() {
@@ -679,6 +697,23 @@ impl std::ops::Index<Handle<PartialPath>> for Database {
 impl ToAppendable<Handle<PartialPath>, PartialPath> for Database {
     fn get_appendable<'a>(&'a self, handle: &'a Handle<PartialPath>) -> &'a PartialPath {
         &self[*handle]
+    }
+
+    fn precondition_leading_symbols(
+        &self,
+        handle: &Handle<PartialPath>,
+        _partials: &mut PartialPaths,
+        skip: usize,
+    ) -> [Option<Handle<Symbol>>; JOIN_SYMBOLS] {
+        let all = &self.leading_symbols[*handle];
+        let mut out = [None; JOIN_SYMBOLS];
+        if skip <= 1 {
+            out.copy_from_slice(&all[skip..skip + JOIN_SYMBOLS]);
+        } else if skip < all.len() {
+            let n = all.len() - skip;
+            out[..n].copy_from_slice(&all[skip..]);
+        }
+        out
     }
 }
 
@@ -1185,7 +1220,7 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
         for candidate in &self.candidates {
             let appendable = db.get_appendable(candidate);
             if join_known {
-                let other = appendable.precondition_leading_symbols(partials, rhs_index);
+                let other = db.precondition_leading_symbols(candidate, partials, rhs_index);
                 let clash = join_symbols
                     .iter()
                     .zip(other.iter())

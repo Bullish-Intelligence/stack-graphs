@@ -123,3 +123,39 @@ fn incoming_path_degree_of_node_outside_database_is_zero() {
     assert_eq!(Degree::One, db.get_incoming_path_degree(foo));
     assert_eq!(Degree::Zero, db.get_incoming_path_degree(bar));
 }
+
+#[test]
+fn a_database_gives_the_same_leading_symbols_as_its_paths() {
+    use stack_graphs::stitching::Appendable;
+    use stack_graphs::stitching::ToAppendable;
+
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("test").unwrap();
+    let mut partials = PartialPaths::new();
+    let mut nodes = vec![StackGraph::root_node()];
+    for symbol in ["a", "b", "c", "d", "e", "f"] {
+        nodes.push(create_pop_symbol_node(&mut graph, file, symbol, true));
+    }
+    // The precondition holds the symbols a to f, and a short path holds only a and b.
+    let long = create_partial_path_and_edges(&mut graph, &mut partials, &nodes).unwrap();
+    let short = create_partial_path_and_edges(&mut graph, &mut partials, &nodes[..3]).unwrap();
+    let mut db = Database::new();
+    let handles = vec![long, short]
+        .into_iter()
+        .map(|path| db.add_partial_path(&graph, &mut partials, path))
+        .collect::<Vec<_>>();
+    for handle in &handles {
+        for skip in 0..8 {
+            let from_path = db[*handle].precondition_leading_symbols(&mut partials, skip);
+            let from_database = db.precondition_leading_symbols(handle, &mut partials, skip);
+            // The table is exact for the skips that the join test uses.
+            if skip <= 1 {
+                assert_eq!(from_path, from_database, "skip {}", skip);
+            }
+            // A longer skip may only lose symbols: a missing symbol never causes a clash.
+            for (path_symbol, database_symbol) in from_path.iter().zip(from_database.iter()) {
+                assert!(database_symbol.is_none() || database_symbol == path_symbol);
+            }
+        }
+    }
+}
