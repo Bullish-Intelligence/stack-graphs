@@ -719,3 +719,70 @@ impl std::fmt::Debug for GraphNodeRef {
         write!(f, "[graph node {}]", self.0)
     }
 }
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod syntax_node_id_tests {
+    use super::*;
+
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    fn node_ref(index: SyntaxNodeID) -> SyntaxNodeRef {
+        SyntaxNodeRef {
+            index,
+            kind: "module",
+            position: tree_sitter::Point { row: 0, column: 0 },
+        }
+    }
+
+    /// The identifier of a syntax node is its whole address. Upstream cuts it to 32 bits.
+    #[test]
+    fn a_syntax_node_id_keeps_all_its_bits() {
+        assert_eq!(
+            std::mem::size_of::<usize>(),
+            std::mem::size_of::<SyntaxNodeID>()
+        );
+        let tree = parse("a = 1\nb = 2\n");
+        let root = tree.root_node();
+        let mut graph = Graph::new();
+        let node_ref = graph.add_syntax_node(root);
+        assert_eq!(root.id(), node_ref.index);
+        assert_eq!(root.id(), graph[node_ref].id());
+    }
+
+    /// Two identifiers that differ only above bit 31 name two nodes. A 32 bit identifier makes
+    /// them one key, and the graph then returns the wrong node or fails with "Duplicate variable".
+    #[test]
+    fn syntax_node_ids_above_u32_max_do_not_collide() {
+        let tree = parse("a = 1\nb = 2\n");
+        let first = tree.root_node().child(0).unwrap();
+        let second = tree.root_node().child(1).unwrap();
+        assert_ne!(first.id(), second.id());
+        let low: SyntaxNodeID = 0x1234;
+        let high: SyntaxNodeID = low + (u32::MAX as usize + 1);
+        let above: SyntaxNodeID = low + 7 * (u32::MAX as usize + 1);
+        assert_eq!(low, high as u32 as usize);
+        assert_ne!(low, high);
+        assert_ne!(high, above);
+        let mut graph = Graph::new();
+        graph.syntax_nodes.insert(low, first);
+        graph.syntax_nodes.insert(high, second);
+        graph.syntax_nodes.insert(above, first);
+        assert_eq!(3, graph.syntax_nodes.len());
+        assert_eq!(first.id(), graph[node_ref(low)].id());
+        assert_eq!(second.id(), graph[node_ref(high)].id());
+        assert_eq!(first.id(), graph[node_ref(above)].id());
+        // The references differ, so a table keyed by them keeps them apart.
+        assert_ne!(node_ref(low), node_ref(high));
+        let mut table = HashMap::new();
+        table.insert(node_ref(low), "low");
+        table.insert(node_ref(high), "high");
+        assert_eq!(2, table.len());
+        assert_eq!(Some(&"high"), table.get(&node_ref(high)));
+    }
+}

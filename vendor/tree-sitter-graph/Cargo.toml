@@ -12,7 +12,8 @@
 # 63f86eb73c7d891c4b9b6fe4d4e63dd94c506e4788af7c2296afdcfbeea626cc
 # A crates.io publish of the parent crate needs a published fork of this crate, or the two
 # changes above are lost.
-# This copy has no binary. Its only tests are the unit tests of the regex cache.
+# This copy has no binary. Its tests are the unit tests of the regex cache and the integration
+# tests of upstream 0.12.0 in `tests/it`, with the tests for the changes above.
 # Run them with `cargo test -p tree-sitter-graph`.
 
 [package]
@@ -32,6 +33,10 @@ path = "src/lib.rs"
 test = true
 doctest = false
 
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
 [dependencies]
 colored = { version = "2", optional = true }
 log = "0.4"
@@ -45,3 +50,8 @@ tree-sitter = "0.24"
 
 [features]
 term-colors = ["colored"]
+
+[dev-dependencies]
+env_logger = "0.9"
+indoc = "1.0"
+tree-sitter-python = "=0.23.5"
