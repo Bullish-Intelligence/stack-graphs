@@ -245,6 +245,7 @@ inherit .class_self_scope
 inherit .class_super_scope
 inherit .declared_names
 inherit .enclosing_scope
+inherit .final_scope
 inherit .function_returns
 inherit .no_class_gate
 inherit .global
@@ -399,6 +400,7 @@ inherit .type_param_scope
   node @mod.type_param_scope
   let @mod.declaration = #false
   node @mod.enclosing_scope
+  node @mod.final_scope
 
   ;; the scope that a literal pushes with the "()" symbol of its class
   node @mod.literal_scope
@@ -1094,7 +1096,15 @@ inherit .type_param_scope
   attr (drop_scope) type = "drop_scopes"
   ; The names that a `global` or `nonlocal` statement in the body declares.
   node @body.declared_names
-  let @body.enclosing_scope = @func.local_scope
+  ; The scope that `nonlocal` reaches. It holds the bindings of the enclosing function before the
+  ; definition, and the final bindings of that function, as the inner function can run after
+  ; the enclosing function binds a name later. The bindings before the definition win.
+  node enclosing_scope
+  edge enclosing_scope -> @func.local_scope
+  attr (enclosing_scope -> @func.local_scope) precedence = 1
+  edge enclosing_scope -> @func.final_scope
+  let @body.enclosing_scope = enclosing_scope
+  let @body.final_scope = @body.after_scope
   attr (@func.call) pop_scoped_symbol = "()"
   edge @params.before_scope -> JUMP_TO_SCOPE_NODE
   attr (return_value) is_exported
