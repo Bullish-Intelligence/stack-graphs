@@ -1241,7 +1241,7 @@ inherit .type_param_scope
                 name: (identifier) @method_name
                 parameters: 
                     (parameters . (identifier) @first_param)
-                body: (block) @method_body
+                body: (block)
             )
          )
 ) @class
@@ -1255,12 +1255,43 @@ inherit .type_param_scope
   } else {
     edge @first_param.def -> @first_param.class_self_scope
   }
-  ; Only a method that can store an attribute of its first parameter joins the member attributes.
-  let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+[^\\n=(]*=(?:[^=]|$)|\\b(?:for|as)\\s+[(\\[\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param)) "")
+}
+
+;; A method that can store an attribute of its first parameter joins the member attributes. This
+;; holds for a method with a decorator too, except for a `staticmethod`. One stanza holds the
+;; pattern of the stores, so that the two forms of a method cannot differ. The pattern finds, in
+;; the text of the body:
+;; - a store `p.name = value`, also with an annotation (`p.name: T = value`) and with the target
+;;   in a list (`p.a, p.b = value`), also when a backslash continues the line,
+;; - an annotation with no value, `p.name: T`, at the start of a line,
+;; - a target of `for` or `as` (`for p.name in items`, `for i, p.name in items`).
+;; A call such as `p.m(key=1)` is no store. The parenthesis stops the first form.
+(class_definition
+    body: (block [
+        (function_definition
+            parameters: (parameters . (identifier) @first_param)
+            body: (block) @method_body)
+        (decorated_definition
+            (decorator (_) @decorator) .
+            definition: (function_definition
+                parameters: (parameters . (identifier) @first_param)
+                body: (block) @method_body))
+    ])
+)
+{
+  let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+(?:[^\\n=(\\\\]|\\\\\\n)*=(?:[^=]|$)|^[ \\t]*{}[ \\t]*\\.[ \\t]*\\w+[ \\t]*:|\\b(?:for|as)\\s+(?:[(\\[*\\s]*[\\w.]+[)\\]\\s]*,\\s*)*[(\\[*\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param) (source-text @first_param)) "")
   if (not (eq stores (source-text @method_body))) {
-    edge @first_param.class_member_attr_scope -> @first_param.output
-    edge @first_param.output -> @method_body.after_scope
-    attr (@first_param.output) push_node = @first_param
+    if some @decorator {
+      if (not (eq (source-text @decorator) "staticmethod")) {
+        edge @first_param.class_member_attr_scope -> @first_param.output
+        edge @first_param.output -> @method_body.after_scope
+        attr (@first_param.output) push_node = @first_param
+      }
+    } else {
+      edge @first_param.class_member_attr_scope -> @first_param.output
+      edge @first_param.output -> @method_body.after_scope
+      attr (@first_param.output) push_node = @first_param
+    }
   }
 }
 
@@ -1301,18 +1332,12 @@ inherit .type_param_scope
                 definition: (function_definition
                     parameters:
                         (parameters . (identifier) @first_param)
-                    body: (block) @method_body
+                    body: (block)
                 )
             )
          )
 ) @class
 {
-  let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+[^\\n=(]*=(?:[^=]|$)|\\b(?:for|as)\\s+[(\\[\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param)) "")
-  if (and (not (eq (source-text @decorator) "staticmethod")) (not (eq stores (source-text @method_body)))) {
-    edge @first_param.class_member_attr_scope -> @first_param.output
-    edge @first_param.output -> @method_body.after_scope
-    attr (@first_param.output) push_node = @first_param
-  }
   if (not (or (eq (source-text @decorator) "staticmethod") (eq (source-text @decorator) "classmethod"))) {
     edge @first_param.def -> @first_param.class_self_scope
   }
