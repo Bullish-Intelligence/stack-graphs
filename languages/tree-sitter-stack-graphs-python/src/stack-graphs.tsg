@@ -3189,6 +3189,20 @@ inherit .type_param_scope
   edge instance -> @type.annot
 }
 
+;; In a function body, `x: Foo = value` narrows the variable to the value at a read after the
+;; assignment, as `scip-python` does. The edge to the value gets a higher precedence than the edge
+;; to the annotation. A path that follows the value shadows a path that follows the annotation.
+;; When the value reaches no class, only the annotation path is complete, so the annotation stays.
+;; An attribute (`self.x: Foo = value`) and a variable of a module or a class keep the annotation
+;; first: another statement can assign the name, and a reader outside the body sees the declared
+;; type.
+(function_definition
+  body: (block (expression_statement
+    (assignment left: (identifier) @pattern type: (type) right: (_) @value))))
+{
+  attr (@pattern.input -> @value.output) precedence = 1
+}
+
 ;;;; Annotated splat parameters
 ;;
 ;; The annotation of `*args: T` describes each element, so `args` is a tuple. The annotation of
