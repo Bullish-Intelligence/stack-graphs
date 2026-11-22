@@ -2400,6 +2400,20 @@ inherit .type_param_scope
   edge @pattern.input -> @value.output
 }
 
+;; A name that an assignment binds hangs off the scope before the statement, so a later statement
+;; sees it. The right side of the same statement looks in that scope too, so `X = X` in a class
+;; body finds the member that it defines, and not the `X` of the enclosing scope. In a class body,
+;; the name hangs off the scope after the statement instead. The statements after it still see
+;; it, with the same precedence. The right side then skips it.
+(class_definition
+  body: (block
+    (expression_statement
+      (assignment left: (identifier) @name right: (_))) @stmt))
+{
+  let @name.local_scope = @stmt.after_scope
+}
+
+
 ;;
 ;;  #####                                      #######
 ;; #     # #   # #    # #####   ##   #    #       #    #   # #####  ######  ####
