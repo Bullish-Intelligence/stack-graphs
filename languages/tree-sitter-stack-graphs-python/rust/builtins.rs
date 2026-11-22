@@ -559,12 +559,21 @@ fn local_variable_shadows_builtin() {
 }
 
 #[test]
-fn conditional_binding_keeps_the_builtin() {
-    // The assignment may not run, so both the local variable and the builtin can be the target.
+fn conditional_binding_shadows_the_builtin() {
+    // The assignment makes the name local to the whole function, so the builtin is not a target,
+    // even when the assignment may not run.
     let source = "def f(a):\n    if a:\n        id = 1\n    return id\n";
     let targets = resolve(source, "id");
+    assert_eq!(targets, vec![Target::Local(2)], "{:?}", targets);
+}
+
+// At the module level, the assignment may not run, so both the variable and the builtin stay.
+#[test]
+fn conditional_module_binding_keeps_the_builtin() {
+    let source = "if a:\n    id = 1\nid\n";
+    let targets = resolve(source, "id");
     assert_eq!(targets.len(), 2, "{:?}", targets);
-    assert!(targets.contains(&Target::Local(2)), "{:?}", targets);
+    assert!(targets.contains(&Target::Local(1)), "{:?}", targets);
 }
 
 /// Check that the reference `name` resolves to the definition in the stub module `module`.
