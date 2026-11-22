@@ -2217,9 +2217,17 @@ inherit .type_param_scope
   node pattern_index
 
   let statement_scope = @list.local_scope
-  node @pattern.local_scope
-  edge statement_scope -> @pattern.local_scope
-  attr (statement_scope -> @pattern.local_scope) precedence = (plus 1 (named-child-index @pattern))
+  ; A target that is an attribute or a subscript, like `self.a` in `self.a, self.b = value`, binds
+  ; no name. The names inside it are references. They look in the scope of the statement, as the
+  ; names in a single target do. A name binding has a scope of its own, which leads to the
+  ; definition only.
+  if (or (eq (node-type @pattern) "attribute") (eq (node-type @pattern) "subscript")) {
+    let @pattern.local_scope = @pattern.binding_scope
+  } else {
+    node @pattern.local_scope
+    edge statement_scope -> @pattern.local_scope
+    attr (statement_scope -> @pattern.local_scope) precedence = (plus 1 (named-child-index @pattern))
+  }
 
   edge pattern_index -> @list.input
   edge @pattern.input -> pattern_index
