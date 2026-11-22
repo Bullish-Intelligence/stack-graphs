@@ -203,6 +203,40 @@ fn super_init_reaches_object_when_no_base_has_init() {
 }
 
 #[test]
+fn super_init_reaches_the_second_base_not_object_of_the_first() {
+    // The first base has no `__init__` and names `object`, as `argparse._AttributeHolder` does.
+    // The second base has an `__init__`. The call must reach it, not `object.__init__`.
+    let source = "class H(object):\n    pass\n\nclass C(object):\n    def __init__(self):\n        pass\n\nclass P(H, C):\n    def __init__(self):\n        super(P, self).__init__()\n";
+    assert_eq!(resolve(source, "__init__"), vec![Target::Local(4)]);
+}
+
+#[test]
+fn super_init_reaches_object_when_all_bases_name_it() {
+    // No base has an `__init__`. The search reaches `object` last.
+    let source = "class H(object):\n    pass\n\nclass C(object):\n    pass\n\nclass P(H, C):\n    def __init__(self):\n        super().__init__()\n";
+    assert_member(source, "__init__", "object", "def __init__(self, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_init_follows_a_generic_base() {
+    let source = "class B(object):\n    def __init__(self):\n        pass\n\nclass P(B[int]):\n    def __init__(self):\n        super().__init__()\n";
+    assert_eq!(resolve(source, "__init__"), vec![Target::Local(1)]);
+}
+
+#[test]
+fn member_of_object_through_an_explicit_object_base() {
+    // The class names `object`, so the instance has the members of `object`.
+    let source = "class A(object):\n    pass\n\nx = A().__repr__\n";
+    assert_member(source, "__repr__", "object", "def __repr__(self, *args, **kwargs): ...");
+}
+
+#[test]
+fn member_of_a_later_base_wins_over_object_of_the_first() {
+    let source = "class H(object):\n    pass\n\nclass C(object):\n    def __repr__(self):\n        pass\n\nclass P(H, C):\n    pass\n\nx = P().__repr__\n";
+    assert_eq!(resolve(source, "__repr__"), vec![Target::Local(4)]);
+}
+
+#[test]
 fn super_init_reaches_base_init_not_object() {
     // `C` has an `__init__`: the call reaches it, and the builtin `object` is no target.
     let source = "class C:\n    def __init__(self):\n        pass\n\nclass D(C):\n    def __init__(self):\n        super().__init__()\n";

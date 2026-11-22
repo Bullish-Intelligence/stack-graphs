@@ -1416,6 +1416,7 @@ inherit .type_param_scope
   node @class.member_attrs
   node @class.members
   node @class.super_scope
+  node @class.super_call_scope
   node @class.kw_super_scope
   node @class.init_fields
   node @class.init_fields_public
@@ -1462,6 +1463,7 @@ inherit .type_param_scope
   ; the name of the class does.
   let @class.cls_call = call
   let @class.cls_members_dot = members_dot
+  let @class.self_scope_node = self_scope
 
   ; A keyword argument of a call of the class names a parameter of `__init__`.
   ; Only a lookup with the marker takes this path, so a plain reference to the class does not.
@@ -1504,7 +1506,8 @@ inherit .type_param_scope
   ; A name in the class body shadows an attribute that a method assigns through self.
   ; The attribute lookup of a method reaches the base classes again through the self scope.
   ; The class body must shadow it too, so the class body has the highest precedence.
-  attr (self_scope -> self_dot) precedence = 1
+  attr (self_scope -> self_dot) precedence = 2
+  attr (self_scope -> self_super) precedence = 1
   attr (@class.members -> @class.member_attrs) precedence = 1
 }
 
@@ -1516,7 +1519,7 @@ inherit .type_param_scope
   edge @body.class_parent_scope -> @class.class_parent_scope
   edge @body.class_parent_scope -> @class.local_scope
   let @body.class_self_scope = @class.call_drop
-  let @body.class_super_scope = @class.super_scope
+  let @body.class_super_scope = @class.super_call_scope
 }
 
 (class_definition
@@ -1527,11 +1530,33 @@ inherit .type_param_scope
   attr (@class.members -> @last_stmt.after_scope) precedence = 2
 }
 
+; The base class `object` is no edge of the super scope. Python searches it after all other bases,
+; at every level (as in the C3 order, where `object` is last). An edge from the base `A` to
+; `object` would win over a later base `C` of the class `D(A, C)`, because the path through `A`
+; has the higher precedence. A class with the explicit base `object` reaches it as the last
+; resort from its self scope instead. The next rule adds that edge. A lookup that enters the class
+; as a base does not pass the self scope, so it does not reach `object` there.
 (class_definition
   superclasses: (argument_list
-    (expression) @superclass)) @class
+    (expression) @superclass
+    (#not-eq? @superclass "object"))) @class
 {
   edge @class.super_scope -> @superclass.output
+  edge @class.super_call_scope -> @superclass.output
+}
+
+; The search reaches `object` only if no base class has the member. The self scope is the entry of
+; the instance. Its edge to `object` has the precedence 0, below the members (2) and the base
+; classes (1), so a member of the class or of a base class shadows the member of `object`.
+(class_definition
+  superclasses: (argument_list
+    (identifier) @_base
+    (#eq? @_base "object"))) @class
+{
+  node object_ref
+  attr (object_ref) push_symbol = "object"
+  edge @class.self_scope_node -> object_ref
+  edge object_ref -> @class.global_dot
 }
 
 ; A base class that stands earlier in the list wins over a later one. A member of the first base
@@ -1542,21 +1567,58 @@ inherit .type_param_scope
 ; resolves to `A`, and Python reads `C` first. The first, second, and third base get the
 ; precedences 3, 2, and 1. A base that stands later than the third keeps the precedence 0.
 (class_definition
-  superclasses: (argument_list . (expression) @superclass)) @class
+  superclasses: (argument_list . (expression) @superclass (#not-eq? @superclass "object"))) @class
 {
   attr (@class.super_scope -> @superclass.output) precedence = 3
+  attr (@class.super_call_scope -> @superclass.output) precedence = 3
 }
 
 (class_definition
-  superclasses: (argument_list . (expression) . (expression) @superclass)) @class
+  superclasses: (argument_list . (expression) . (expression) @superclass
+    (#not-eq? @superclass "object"))) @class
 {
   attr (@class.super_scope -> @superclass.output) precedence = 2
+  attr (@class.super_call_scope -> @superclass.output) precedence = 2
 }
 
 (class_definition
-  superclasses: (argument_list . (expression) . (expression) . (expression) @superclass)) @class
+  superclasses: (argument_list . (expression) . (expression) . (expression) @superclass
+    (#not-eq? @superclass "object"))) @class
 {
   attr (@class.super_scope -> @superclass.output) precedence = 1
+  attr (@class.super_call_scope -> @superclass.output) precedence = 1
+}
+
+; A call of `super()` follows a generic base class, `class B(A[T])`, as the keyword paths do. The
+; base `A[T]` is the class `A`. The edge has the precedence of the position of the base, so the
+; bases keep their order. A lookup of a member does not follow it: the work of the lookups would
+; grow. The call of `super()` is rare, so its scope can afford it.
+(class_definition
+  superclasses: (argument_list . (subscript value: (_) @value))) @class
+{
+  edge @class.super_call_scope -> @value.output
+  attr (@class.super_call_scope -> @value.output) precedence = 3
+}
+
+(class_definition
+  superclasses: (argument_list . (expression) . (subscript value: (_) @value))) @class
+{
+  edge @class.super_call_scope -> @value.output
+  attr (@class.super_call_scope -> @value.output) precedence = 2
+}
+
+(class_definition
+  superclasses: (argument_list . (expression) . (expression) . (subscript value: (_) @value))) @class
+{
+  edge @class.super_call_scope -> @value.output
+  attr (@class.super_call_scope -> @value.output) precedence = 1
+}
+
+(class_definition
+  superclasses: (argument_list
+    (expression) . (expression) . (expression) . (subscript value: (_) @value))) @class
+{
+  edge @class.super_call_scope -> @value.output
 }
 
 ; The keyword paths and the model questions reach the base classes through the keyword super
