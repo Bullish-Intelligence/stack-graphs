@@ -568,20 +568,27 @@ pub mod stdlib {
                 std::cell::RefCell::new(std::collections::HashMap::new());
         }
 
-        /// Returns the compiled form of `pattern`. A pattern compiles once for each thread.
+        /// Replaces every match of `pattern` in `text` with `replacement`. A pattern compiles once
+        /// for each thread. The call borrows the cached regex, and does not clone it: a clone
+        /// has a new search cache, so it would lose most of the gain of the regex cache.
         /// A pattern that does not compile is not cached.
-        fn cached_regex(pattern: &str) -> Result<Regex, regex::Error> {
+        fn replace_cached(
+            pattern: &str,
+            text: &str,
+            replacement: &str,
+        ) -> Result<String, regex::Error> {
             REGEX_CACHE.with(|cache| {
                 let mut cache = cache.borrow_mut();
                 if let Some(regex) = cache.get(pattern) {
-                    return Ok(regex.clone());
+                    return Ok(regex.replace_all(text, replacement).to_string());
                 }
                 let regex = Regex::new(pattern)?;
                 if cache.len() >= REGEX_CACHE_LIMIT {
                     cache.clear();
                 }
-                cache.insert(pattern.to_string(), regex.clone());
-                Ok(regex)
+                let replaced = regex.replace_all(text, replacement).to_string();
+                cache.insert(pattern.to_string(), regex);
+                Ok(replaced)
             })
         }
 
@@ -590,24 +597,27 @@ pub mod stdlib {
             use super::*;
 
             #[test]
-            fn cached_regex_replaces_like_a_fresh_regex() {
-                let first = cached_regex("[ab]+").unwrap();
-                let second = cached_regex("[ab]+").unwrap();
-                assert_eq!(first.replace_all("xaby", "-"), "x-y");
-                assert_eq!(second.replace_all("xaby", "-"), "x-y");
-                assert_eq!(first.as_str(), second.as_str());
+            fn replace_cached_replaces_like_a_fresh_regex() {
+                let first = replace_cached("[ab]+", "xaby", "-").unwrap();
+                let second = replace_cached("[ab]+", "xaby", "-").unwrap();
+                assert_eq!(first, "x-y");
+                assert_eq!(second, "x-y");
+                // A group in the replacement works on a cached pattern, too.
+                assert_eq!(replace_cached("(a)(b)", "ab", "$2$1").unwrap(), "ba");
+                assert_eq!(replace_cached("(a)(b)", "abab", "$2$1").unwrap(), "baba");
             }
 
             #[test]
-            fn cached_regex_does_not_cache_a_bad_pattern() {
-                assert!(cached_regex("(").is_err());
-                assert!(cached_regex("(").is_err());
+            fn replace_cached_does_not_cache_a_bad_pattern() {
+                assert!(replace_cached("(", "", "").is_err());
+                assert!(replace_cached("(", "", "").is_err());
+                REGEX_CACHE.with(|cache| assert!(!cache.borrow().contains_key("(")));
             }
 
             #[test]
-            fn cached_regex_stays_below_its_limit() {
+            fn replace_cached_stays_below_its_limit() {
                 for i in 0..(REGEX_CACHE_LIMIT * 3) {
-                    cached_regex(&format!("p{}", i)).unwrap();
+                    replace_cached(&format!("p{}", i), "p1", "").unwrap();
                 }
                 REGEX_CACHE.with(|cache| assert!(cache.borrow().len() <= REGEX_CACHE_LIMIT));
             }
@@ -625,14 +635,12 @@ pub mod stdlib {
             ) -> Result<Value, ExecutionError> {
                 let text = parameters.param()?.into_string()?;
                 let pattern = parameters.param()?.into_string()?;
-                let pattern = cached_regex(&pattern).map_err(|e| {
-                    ExecutionError::FunctionFailed("replace".into(), format!("{}", e))
-                })?;
                 let replacement = parameters.param()?.into_string()?;
                 parameters.finish()?;
-                Ok(Value::String(
-                    pattern.replace_all(&text, replacement.as_str()).to_string(),
-                ))
+                let replaced = replace_cached(&pattern, &text, &replacement).map_err(|e| {
+                    ExecutionError::FunctionFailed("replace".into(), format!("{}", e))
+                })?;
+                Ok(Value::String(replaced))
             }
         }
     }

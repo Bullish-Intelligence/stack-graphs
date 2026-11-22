@@ -5,6 +5,13 @@
 #    "Duplicate variable" or reads the wrong node.
 # 2. `replace` in `src/functions.rs` keeps each compiled regex in a cache of the thread. Upstream
 #    compiles the pattern on each call.
+# Upstream commit: b930fb59 (tree-sitter/tree-sitter-graph, the newest upstream commit when this
+# copy was made; upstream released 0.12.0 on 2024-12-11).
+# crates.io checksum of the 0.12.0 package, as the Cargo.lock of this repository had it before
+# the vendoring (commit 37ef2f3):
+# 63f86eb73c7d891c4b9b6fe4d4e63dd94c506e4788af7c2296afdcfbeea626cc
+# A crates.io publish of the parent crate needs a published fork of this crate, or the two
+# changes above are lost.
 # This copy has no binary. Its only tests are the unit tests of the regex cache.
 # Run them with `cargo test -p tree-sitter-graph`.
 
