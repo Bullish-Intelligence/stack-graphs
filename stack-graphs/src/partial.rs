@@ -471,6 +471,21 @@ impl PartialSymbolStack {
         out
     }
 
+    /// Like [`leading_symbols`][Self::leading_symbols], but it needs no mutable access and adds no
+    /// cells to the arena, whichever direction the stack is stored in.
+    pub fn leading_symbols_in_place<const K: usize>(
+        self,
+        partials: &PartialPaths,
+        skip: usize,
+    ) -> [Option<Handle<Symbol>>; K] {
+        let mut out = [None; K];
+        let symbols = self.symbols.to_smallvec::<8>(&partials.partial_symbol_stacks);
+        for (slot, symbol) in out.iter_mut().zip(symbols.iter().skip(skip)) {
+            *slot = Some(symbol.symbol);
+        }
+        out
+    }
+
     /// Returns whether this partial symbol stack can _only_ match the empty symbol stack.
     #[inline(always)]
     pub fn can_only_match_empty(&self) -> bool {

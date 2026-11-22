@@ -384,7 +384,7 @@ impl Database {
         let symbol_stack_precondition = path.symbol_stack_precondition;
         let handle = self.partial_paths.add(path);
         self.leading_symbols[handle] =
-            symbol_stack_precondition.leading_symbols::<{ JOIN_SYMBOLS + 1 }>(partials, 0);
+            symbol_stack_precondition.leading_symbols_in_place::<{ JOIN_SYMBOLS + 1 }>(partials, 0);
 
         // If the partial path starts at the root node, index it by its symbol stack precondition.
         if graph[start_node].is_root() {
