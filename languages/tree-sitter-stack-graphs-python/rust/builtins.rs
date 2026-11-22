@@ -251,6 +251,51 @@ fn super_init_reaches_base_init_not_object() {
 }
 
 #[test]
+fn super_new_reaches_the_builtin_base_only() {
+    // The shape of `celery.canvas.chain`: a chain of classes over `dict`. The call of
+    // `super().__new__` reaches `dict.__new__`. `object.__new__` is no second target.
+    let source = "class Sig(dict):\n    pass\n\nclass _chain(Sig):\n    pass\n\nclass chain(_chain):\n    def __new__(cls, *tasks, **kwargs):\n        return super().__new__(cls, *tasks, **kwargs)\n";
+    assert_member(source, "__new__", "dict", "def __new__(cls, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_new_with_a_store_in_the_chain_reaches_the_builtin_base_only() {
+    // The shape of `celery.canvas.Signature`: the class stores an attribute through `self`.
+    let source = "class Sig(dict):\n    def __init__(self):\n        self.a = 1\n\nclass chain(Sig):\n    def __new__(cls, *tasks, **kwargs):\n        return super().__new__(cls, *tasks, **kwargs)\n";
+    assert_member(source, "__new__", "dict", "def __new__(cls, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_new_with_a_class_store_in_the_chain_reaches_the_builtin_base_only() {
+    // The shape of `celery.canvas.Signature`: a classmethod stores through its first parameter,
+    // and `__init__` stores through `self`. The member route of the stores must not return to the
+    // class and look the member up again. A loop ends in `dict` and in `object`.
+    let source = "class Sig(dict):\n    @classmethod\n    def register(cls, name=None):\n        cls.X = 1\n\n    def __init__(self, task=None):\n        self._app = task\n\nclass chain(Sig):\n    def __new__(cls, *tasks, **kwargs):\n        return super().__new__(cls, *tasks, **kwargs)\n";
+    assert_member(source, "__new__", "dict", "def __new__(cls, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_new_through_a_chain_with_a_class_store_reaches_the_builtin_base_only() {
+    // The same shape with a class between `Sig` and `chain`, as in `celery.canvas`.
+    let source = "class Sig(dict):\n    @classmethod\n    def register(cls, name=None):\n        def inner(sub):\n            cls.TYPES[name or sub.__name__] = sub\n            return sub\n        return inner\n\n    def __init__(self, task=None):\n        self._app = task\n\nclass chain(Sig):\n    def __new__(cls, *tasks, **kwargs):\n        return super().__new__(cls, *tasks, **kwargs)\n";
+    assert_member(source, "__new__", "dict", "def __new__(cls, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_new_reaches_the_local_base() {
+    // A base that defines `__new__` wins over `dict` and `object`.
+    let source = "class Sig(dict):\n    def __new__(cls, *args):\n        return super().__new__(cls, *args)\n\nclass chain(Sig):\n    def __new__(cls, *tasks):\n        return super().__new__(cls, *tasks)\n";
+    assert_eq!(resolve_lines(source, "__new__").iter().filter(|t| t.0 == TEST_FILE).count(), 1);
+}
+
+#[test]
+fn member_of_a_store_class_with_a_builtin_base_is_not_ambiguous() {
+    // The attribute `a` of an instance reaches the store, and no member of `dict` or `object`.
+    let source = "class Sig(dict):\n    def __init__(self):\n        self.a = 1\n\ndef f(x: Sig):\n    return x.a\n";
+    assert_eq!(resolve(source, "a"), vec![Target::Local(2)]);
+}
+
+#[test]
 fn builtin_exception_class() {
     assert_builtin(
         "def f():\n    raise ValueError('bad')\n",
