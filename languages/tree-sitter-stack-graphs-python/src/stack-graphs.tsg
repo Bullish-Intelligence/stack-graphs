@@ -3409,6 +3409,22 @@ inherit .narrow_scope
   node @call.narrowed
 }
 
+; A guard of `a.b` is more specific than a guard of `a`. Both can narrow a lookup of `a.b.c`. The
+; guard of `a.b` wins, so its edge has the higher precedence.
+(
+  (call
+    function: (identifier) @_isinstance
+    arguments: (argument_list . (_) @_first)) @call
+  (#eq? @_isinstance "isinstance")
+)
+{
+  if (eq (replace (source-text @_first) "^\\w+\\s*\\.\\s*\\w+$" "") "") {
+    let @call.narrow_precedence = 2
+  } else {
+    let @call.narrow_precedence = 1
+  }
+}
+
 (
   (call
     function: (identifier) @_isinstance
@@ -3534,7 +3550,7 @@ inherit .narrow_scope
 )
 {
   edge @right.narrow_scope -> @call.narrowing
-  attr (@right.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@right.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
 
 (
@@ -3574,7 +3590,7 @@ inherit .narrow_scope
 )
 {
   edge @stmt.narrow_scope -> @call.narrowing
-  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
 
 (
@@ -3598,7 +3614,7 @@ inherit .narrow_scope
 )
 {
   edge @stmt.narrow_scope -> @call.narrowing
-  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
 
 ;; More guards. These forms narrow like the guards above.
@@ -3629,7 +3645,7 @@ inherit .narrow_scope
 )
 {
   edge @right.narrow_scope -> @call.narrowing
-  attr (@right.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@right.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
 
 (
@@ -3693,7 +3709,7 @@ inherit .narrow_scope
 )
 {
   edge @stmt.narrow_scope -> @call.narrowing
-  attr (@stmt.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@stmt.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
 
 (
@@ -3707,5 +3723,5 @@ inherit .narrow_scope
   node @body.narrow_scope
   edge @body.narrow_scope -> @op.narrow_scope
   edge @body.narrow_scope -> @call.narrowing
-  attr (@body.narrow_scope -> @call.narrowing) precedence = 1
+  attr (@body.narrow_scope -> @call.narrowing) precedence = @call.narrow_precedence
 }
