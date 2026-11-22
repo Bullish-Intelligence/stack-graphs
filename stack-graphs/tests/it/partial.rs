@@ -1438,6 +1438,47 @@ fn the_symbol_stack_follows_the_edges_of_the_path() {
 }
 
 #[test]
+fn the_top_of_the_stack_at_a_rival_follows_the_pushes_and_pops_of_the_path() {
+    // The path is: push y, push x, scope a, pop x, scope b, pop y.  The top of the stack is x at
+    // `a` and y at `b`.  The rival at `a` or `b` shadows only when it pops that symbol.
+    for (at_a, symbol, expected) in [
+        (true, "x", true),
+        (true, "y", false),
+        (false, "y", true),
+        (false, "x", false),
+    ] {
+        let mut g = ShadowGraph::new();
+        let mut partials = PartialPaths::new();
+        let push_y = create_push_symbol_node(&mut g.graph, g.file, "y", true);
+        let push_x = create_push_symbol_node(&mut g.graph, g.file, "x", false);
+        let a = create_scope_node(&mut g.graph, g.file, false);
+        let pop_x = create_pop_symbol_node(&mut g.graph, g.file, "x", false);
+        let b = create_scope_node(&mut g.graph, g.file, false);
+        let pop_y = create_pop_symbol_node(&mut g.graph, g.file, "y", true);
+        let nodes = [push_y, push_x, a, pop_x, b, pop_y];
+        let rival = create_pop_symbol_node(&mut g.graph, g.file, symbol, true);
+        g.graph.add_edge(if at_a { a } else { b }, rival, 1);
+        let mut path = PartialPath::from_node(&g.graph, &mut partials, nodes[0]);
+        for pair in nodes.windows(2) {
+            let edge = stack_graphs::graph::Edge {
+                source: pair[0],
+                sink: pair[1],
+                precedence: 0,
+            };
+            g.graph.add_edge(edge.source, edge.sink, edge.precedence);
+            path.append(&g.graph, &mut partials, edge).unwrap();
+        }
+        assert_eq!(
+            expected,
+            g.can_be_shadowed(&mut partials, &path),
+            "rival at {} pops {}",
+            if at_a { "a" } else { "b" },
+            symbol
+        );
+    }
+}
+
+#[test]
 fn a_path_with_an_unknown_stack_and_no_symbol_on_top_can_be_shadowed_by_any_pop() {
     let mut g = ShadowGraph::new();
     let mut partials = PartialPaths::new();

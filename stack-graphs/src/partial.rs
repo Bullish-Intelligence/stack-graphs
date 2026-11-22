@@ -1892,6 +1892,17 @@ pub struct PartialPath {
     pub edges: PartialPathEdgeList,
 }
 
+/// How many queries for a stack top `can_be_shadowed` keeps before it takes the forward pass.
+const SHADOW_QUERIES: usize = 16;
+
+/// A query for the top of the symbol stack at the source of an edge, for `can_be_shadowed`.
+/// `skip` counts the pops after the nodes that the query has seen.
+struct ShadowQuery {
+    source: Handle<Node>,
+    precedence: i32,
+    skip: usize,
+}
+
 impl PartialPath {
     /// Creates a new empty partial path starting at a stack graph node.
     pub fn from_node(
@@ -1958,6 +1969,135 @@ impl PartialPath {
     /// edges of the path, from the precondition of the path.  An edge to any other node can
     /// continue the path.
     pub fn can_be_shadowed(&self, graph: &StackGraph, partials: &mut PartialPaths) -> bool {
+        match self.can_be_shadowed_backwards(graph, partials) {
+            Some(answer) => answer,
+            None => self.can_be_shadowed_forwards(graph, partials),
+        }
+    }
+
+    /// Decides [`can_be_shadowed`][] in one pass from the last edge to the first edge, with no
+    /// copy of the edges.  The answer is the same as the answer of
+    /// [`can_be_shadowed_forwards`][].  Returns `None` if the pass cannot decide:
+    /// if the edges have no cached reversal, or if too many nodes wait for a stack top.
+    ///
+    /// The forward pass needs the top of the symbol stack at each node where a sibling edge of
+    /// higher precedence leaves the path.  Most nodes have no such sibling.  The backward pass
+    /// opens a query at each such node.  A query counts the pops that it sees, and a push
+    /// ends it when the count is zero.  A query that sees no push takes the top from the
+    /// precondition.  The forward pass ignores a pop at an empty stack.  The count then
+    /// exceeds the length of the precondition, which also gives no top.
+    ///
+    /// [`can_be_shadowed`]: #method.can_be_shadowed
+    /// [`can_be_shadowed_forwards`]: #method.can_be_shadowed_forwards
+    fn can_be_shadowed_backwards(
+        &self,
+        graph: &StackGraph,
+        partials: &mut PartialPaths,
+    ) -> Option<bool> {
+        const MAX_QUERIES: usize = SHADOW_QUERIES;
+        if self.edges.len() == 0 {
+            return Some(false);
+        }
+        let mut waiting = SmallVec::<[ShadowQuery; MAX_QUERIES]>::new();
+        // The queries that a push ended, with the symbol that they found.
+        let mut found =
+            SmallVec::<[(ShadowQuery, Handle<crate::graph::Symbol>); MAX_QUERIES]>::new();
+        let below_is_unknown = self.symbol_stack_precondition.has_variable();
+        {
+            let arena = &partials.partial_path_edges;
+            let mut edges = self.edges.edges.iter_reversed_if_cached(arena)?;
+            let mut index = self.edges.len();
+            while let Some(edge) = edges.next() {
+                index -= 1;
+                let source = match graph.node_for_id(edge.source_node_id) {
+                    Some(source) => source,
+                    None => return Some(true),
+                };
+                if graph
+                    .outgoing_edges(source)
+                    .any(|other| other.precedence > edge.precedence)
+                {
+                    if waiting.len() + found.len() >= MAX_QUERIES {
+                        return None;
+                    }
+                    waiting.push(ShadowQuery {
+                        source,
+                        precedence: edge.precedence,
+                        skip: 0,
+                    });
+                }
+                // The stack at an edge has seen the start node and the sources of the later
+                // edges.  The source of the first edge is the start node, or is not seen.
+                if index > 0 && !waiting.is_empty() {
+                    Self::act_on_queries(&mut waiting, &mut found, &graph[source]);
+                }
+            }
+        }
+        if !waiting.is_empty() {
+            Self::act_on_queries(&mut waiting, &mut found, &graph[self.start_node]);
+        }
+        let precondition = if waiting.is_empty() {
+            SmallVec::<[Handle<crate::graph::Symbol>; 16]>::new()
+        } else {
+            self.symbol_stack_precondition
+                .iter(partials)
+                .map(|symbol| symbol.symbol)
+                .collect()
+        };
+        let resolved = found.into_iter().map(|(query, top)| (query, Some(top)));
+        let from_precondition = waiting
+            .into_iter()
+            .map(|query| {
+                let top = precondition.get(query.skip).copied();
+                (query, top)
+            })
+            .collect::<SmallVec<[_; MAX_QUERIES]>>();
+        for (query, top) in resolved.chain(from_precondition) {
+            for other in graph.outgoing_edges(query.source) {
+                if other.precedence <= query.precedence {
+                    continue;
+                }
+                if Self::can_reach_matching_pop(graph, other.sink, top, below_is_unknown) {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
+    }
+
+    /// Applies the effect of a node, which comes before the nodes that the waiting queries have
+    /// seen, to the waiting queries.  A push node ends a query with a zero count.
+    fn act_on_queries(
+        waiting: &mut SmallVec<[ShadowQuery; SHADOW_QUERIES]>,
+        found: &mut SmallVec<[(ShadowQuery, Handle<crate::graph::Symbol>); SHADOW_QUERIES]>,
+        node: &Node,
+    ) {
+        let pushed = match node {
+            Node::PushSymbol(push) => Some(push.symbol),
+            Node::PushScopedSymbol(push) => Some(push.symbol),
+            Node::PopSymbol(_) | Node::PopScopedSymbol(_) => {
+                for query in waiting.iter_mut() {
+                    query.skip += 1;
+                }
+                return;
+            }
+            _ => return,
+        };
+        if let Some(symbol) = pushed {
+            let mut index = 0;
+            while index < waiting.len() {
+                if waiting[index].skip == 0 {
+                    let query = waiting.remove(index);
+                    found.push((query, symbol));
+                } else {
+                    waiting[index].skip -= 1;
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    fn can_be_shadowed_forwards(&self, graph: &StackGraph, partials: &mut PartialPaths) -> bool {
         // The top of the stack is at the end of the vector.
         let mut stack = self
             .symbol_stack_precondition
