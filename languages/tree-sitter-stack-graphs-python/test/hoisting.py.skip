@@ -1,0 +1,102 @@
+# SKIPPED. These cases need hoisting: a name that a function assigns anywhere is local to the whole
+# function. The rules cannot express it yet. An edge from the start of the function to each local
+# binding makes a complete path that shadows the module route. But the similar path detector of the
+# stitcher keeps the flow path to the same binding, and it drops the hoisted path. Then nothing
+# shadows the module route. See the commit message of this file for the details.
+#
+# A name that a function assigns anywhere is local to the whole function. A read that no binding
+# reaches along the flow of the function does not fall through to a name of the module.
+
+x = 1
+y = 2
+z = 3
+w = 4
+
+def try_handler(a):
+    try:
+        x = a.compute()
+    except ValueError:
+        raise TypeError
+    return x
+    #      ^ defined: 11
+
+def if_without_else(a):
+    if a:
+        y = 1
+    return y
+    #      ^ defined: 19
+
+def loop_continue(items):
+    for it in items:
+        try:
+            last, z = it.pair()
+        except StopIteration:
+            continue
+        print(z)
+        #     ^ defined: 26
+
+def read_before_assignment():
+    print(x)
+    #     ^ defined: 35
+    x = 5
+    return x
+    #      ^ defined: 35
+
+def after_loop(items):
+    for w in items:
+        pass
+    return w
+    #      ^ defined: 40
+
+# A negative test: a name that the function only reads stays a name of the module.
+def reads_only():
+    return x, y, z
+    #      ^ defined: 4
+    #         ^ defined: 5
+    #            ^ defined: 6
+
+# A negative test: a name that `global` declares stays the name of the module.
+def declared_global(a):
+    global x
+    if a:
+        x = 2
+    return x
+    #      ^ defined: 4
+
+# A parameter and a binding of the same name both stay.
+def parameter_and_binding(w, a):
+    if a:
+        w = 1
+    return w
+    #      ^ defined: 61, 63
+
+# A comprehension variable is no local of the function.
+def comprehension_variable(items):
+    squares = [y for y in items]
+    return y
+    #      ^ defined: 5
+
+# The names of a class body in a function are members, no locals of the function.
+def class_body():
+    class K:
+        z = 1
+    return z
+    #      ^ defined: 6
+
+# An import, a def, and a class in a function are local too.
+def local_definitions(a):
+    if a:
+        import os
+        def w():
+            pass
+    return os, w
+    #      ^ defined: 83
+    #          ^ defined: 84
+
+# A nested function sees the local that the enclosing function binds later.
+def outer():
+    def inner():
+        return later
+        #      ^ defined: 95
+    later = 1
+    return inner
