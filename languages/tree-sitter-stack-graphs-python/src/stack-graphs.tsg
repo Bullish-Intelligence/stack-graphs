@@ -249,6 +249,7 @@ inherit .enclosing_scope
 inherit .final_scope
 inherit .function_returns
 inherit .global
+inherit .hoist_scope
 inherit .global_dot
 inherit .relative_entry
 inherit .binding_scope
@@ -389,6 +390,7 @@ inherit .type_param_scope
   let @mod.global_dot = global_dot
 
   ;; add a dummy nodes for inherited variables
+  node @mod.hoist_scope
   node @mod.class_member_attr_scope
   node @mod.method_ann_scope
   node @mod.class_parent_scope
@@ -682,6 +684,11 @@ inherit .type_param_scope
   (import_from_statement   name: (aliased_import alias:   (identifier) @first  ) @outer)
 ] {
   edge @outer.after_scope -> @first.def
+  ; The name is local to the function, also where no flow reaches the import. The hoisted
+  ; definition is a node of its own: a path that ends at the same node as the flow path is dropped.
+  node hoist_def
+  attr (hoist_def) node_definition = @first
+  edge @first.hoist_scope -> hoist_def
 }
 
 ;;;; Package Name
@@ -940,6 +947,55 @@ inherit .type_param_scope
 
 (exec_statement) {}
 
+;;;; Hoisting
+;;
+;; A name that a function binds anywhere is local to the whole function. The hoist scope of the
+;; function (see the function rule) has an edge to each binding: an assignment, an augmented
+;; assignment, a `for` target, a `with` or `except` target, an assignment expression, a capture
+;; pattern, an import, a function, a class, and a type alias. Each of these rules adds the edge.
+;;
+;; The body of a class and the target of a comprehension clause bind no local of the function.
+;; The body of a lambda has no hoist scope of its own, as it binds only its parameters and its
+;; assignment expressions. An assignment expression in a comprehension binds in the function that
+;; surrounds it. The target of the comprehension does not reach the hoist scope.
+
+(class_definition body: (_) @body)
+{
+  node dead_hoist
+  let @body.hoist_scope = dead_hoist
+}
+
+(for_in_clause left: (_) @left)
+{
+  node dead_hoist
+  let @left.hoist_scope = dead_hoist
+}
+
+(lambda body: (_) @body)
+{
+  node dead_hoist
+  let @body.hoist_scope = dead_hoist
+}
+
+;; `del x` makes `x` a local, as an assignment does. The statement is a binding site, so the name in
+;; it is a definition for the hoist scope. A read of the name does not reach a name of the module.
+[
+  (delete_statement (identifier) @name) @stmt
+  (delete_statement (expression_list (identifier) @name)) @stmt
+  (delete_statement (parenthesized_expression (identifier) @name)) @stmt
+  (delete_statement (tuple (identifier) @name)) @stmt
+  (delete_statement (list (identifier) @name)) @stmt
+  (delete_statement (tuple (tuple (identifier) @name))) @stmt
+  (delete_statement (tuple (list (identifier) @name))) @stmt
+  (delete_statement (list (tuple (identifier) @name))) @stmt
+  (delete_statement (list (list (identifier) @name))) @stmt
+]
+{
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @stmt.hoist_scope -> hoist_def
+}
+
 ;;;; Type parameters and type aliases
 ;;
 ;; The type parameters of a class, a function, or a type alias, as in `class C[T: Base]`, belong to
@@ -1024,6 +1080,9 @@ inherit .type_param_scope
   attr (@name.def) definiens_node = @stmt
   edge @stmt.after_scope -> @name.def
   attr (@stmt.after_scope -> @name.def) precedence = 1
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @stmt.hoist_scope -> hoist_def
 }
 
 ;;;; Compound Statements
@@ -1070,6 +1129,14 @@ inherit .type_param_scope
   ; A function inside another function keeps both, as a name of the enclosing function must win.
   edge @body.before_scope -> drop_scope
   attr (@body.before_scope -> drop_scope) precedence = @func.bottom_precedence
+  ; A name that the body binds anywhere is local to the whole body, as in Python. The hoist scope
+  ; has an edge to each binding of the body, and it shadows the names around the function. A read
+  ; that no binding reaches along the flow of the body then still finds a local, and not a name of
+  ; the module. A name that `global` or `nonlocal` declares wins over it. See `declared_names`.
+  node hoist
+  edge @body.before_scope -> hoist
+  attr (@body.before_scope -> hoist) precedence = 2
+  let @body.hoist_scope = hoist
   let @body.bottom_precedence = 0
   ; In a function, the enclosing bindings win over the final bindings of the module.
   let @body.local_precedence = 1
@@ -1146,6 +1213,9 @@ inherit .type_param_scope
   attr (@name.def) node_definition = @name
   attr (@name.def) definiens_node = @func
   edge @func.after_scope -> @name.def
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @func.hoist_scope -> hoist_def
   ; A function definition shadows an earlier binding of the same name.
   attr (@func.after_scope -> @name.def) precedence = 1
   edge @name.def -> @func.call
@@ -1427,6 +1497,9 @@ inherit .type_param_scope
   attr (@name.def) definiens_node = @class
   attr (@name.def) syntax_type = "class"
   edge @class.after_scope -> @name.def
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @class.hoist_scope -> hoist_def
   ; A class definition shadows an earlier binding of the same name.
   attr (@class.after_scope -> @name.def) precedence = 1
   edge @name.def -> call
@@ -1886,6 +1959,9 @@ inherit .type_param_scope
   attr (@name.def) node_definition = @name
   edge @named.binding_scope -> @name.def
   attr (@named.binding_scope -> @name.def) precedence = 1
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @named.hoist_scope -> hoist_def
   edge @name.def -> @value.output
   edge @named.output -> @value.output
 }
@@ -2335,6 +2411,9 @@ inherit .type_param_scope
   attr (@pattern.local_scope -> @pattern.input) precedence = 1
   attr (@pattern.input) node_definition = @name
   attr (@pattern.output) push_node = @name
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @pattern.hoist_scope -> hoist_def
 
   edge @pattern.new_bindings -> @name.def
 }
@@ -2441,6 +2520,11 @@ inherit .type_param_scope
   attr (@name.local_scope -> @name.input) precedence = 1
   attr (@name.input) is_definition
 
+  ; The name is local to the function, also where no flow reaches the binding.
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @name.hoist_scope -> hoist_def
+
   edge @as_pattern.new_bindings -> @value.new_bindings
   edge @as_pattern.new_bindings -> @name.new_bindings
 }
@@ -2480,6 +2564,11 @@ inherit .type_param_scope
 {
   attr (@name.local_scope -> @name.input) precedence = 1
   attr (@name.input) is_definition
+
+  ; The name is local to the function, also where no flow reaches the binding.
+  node hoist_def
+  attr (hoist_def) node_definition = @name
+  edge @name.hoist_scope -> hoist_def
 
   edge @as_pattern.new_bindings -> @name.new_bindings
 }

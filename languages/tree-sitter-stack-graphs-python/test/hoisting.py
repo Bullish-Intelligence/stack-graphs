@@ -1,9 +1,3 @@
-# SKIPPED. These cases need hoisting: a name that a function assigns anywhere is local to the whole
-# function. The rules cannot express it yet. An edge from the start of the function to each local
-# binding makes a complete path that shadows the module route. But the similar path detector of the
-# stitcher keeps the flow path to the same binding, and it drops the hoisted path. Then nothing
-# shadows the module route. See the commit message of this file for the details.
-#
 # A name that a function assigns anywhere is local to the whole function. A read that no binding
 # reaches along the flow of the function does not fall through to a name of the module.
 

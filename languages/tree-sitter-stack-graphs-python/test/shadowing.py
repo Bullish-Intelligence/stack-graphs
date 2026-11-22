@@ -61,7 +61,7 @@ def conditional_binding(flag):
     if flag:
         input = 1
     return input
-    #      ^ defined: 6, 62
+    #      ^ defined: 62
 
 x = 1
 x = 2
