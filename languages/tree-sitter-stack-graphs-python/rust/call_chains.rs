@@ -155,12 +155,13 @@ fn limited() -> StitcherConfig {
 
 #[test]
 fn branching_call_sites_double_the_queue_at_each_level() {
-    // Without a limit, the peak queue is 2^(levels + 1). These sizes stay under the queue limit.
+    // Without a limit, the peak queue is 2^(levels + 1), plus one entry for the route to `object`.
+    // These sizes stay under the queue limit.
     let mut previous = 0;
     for levels in [4, 6, 8] {
         let found = search(&diamond(levels), "foo", limited());
         assert_eq!(None, found.bounded, "levels {levels}");
-        assert_eq!(1 << (levels + 1), found.peak_queue_len, "levels {levels}");
+        assert_eq!((1 << (levels + 1)) + 1, found.peak_queue_len, "levels {levels}");
         assert_eq!(vec![1], found.lines);
         assert!(found.peak_queue_len > previous);
         previous = found.peak_queue_len;

@@ -231,6 +231,13 @@ fn member_of_object_through_an_explicit_object_base() {
 }
 
 #[test]
+fn member_of_object_through_a_class_without_bases() {
+    // Every class derives from `object`.
+    let source = "class A:\n    pass\n\nclass B(A):\n    pass\n\nx = B().__repr__\n";
+    assert_member(source, "__repr__", "object", "def __repr__(self, *args, **kwargs): ...");
+}
+
+#[test]
 fn member_of_a_later_base_wins_over_object_of_the_first() {
     let source = "class H(object):\n    pass\n\nclass C(object):\n    def __repr__(self):\n        pass\n\nclass P(H, C):\n    pass\n\nx = P().__repr__\n";
     assert_eq!(resolve(source, "__repr__"), vec![Target::Local(4)]);
