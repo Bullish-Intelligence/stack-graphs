@@ -1174,23 +1174,6 @@ impl PartialScopeStack {
         unreachable!();
     }
 
-    /// Returns this stack with its top `max_depth` scopes, or `None` if the stack has a variable
-    /// or has no more than `max_depth` scopes.
-    fn truncated(self, partials: &mut PartialPaths, max_depth: usize) -> Option<PartialScopeStack> {
-        if self.has_variable() || self.len() <= max_depth {
-            return None;
-        }
-        let top = self
-            .iter_scopes(partials)
-            .take(max_depth)
-            .collect::<Vec<_>>();
-        let mut stack = PartialScopeStack::empty();
-        for scope in top {
-            stack.push_back(partials, scope);
-        }
-        Some(stack)
-    }
-
     /// Pushes a new [`Node`][] onto the front of this partial scope stack.  The node must be an
     /// _exported scope node_.
     ///
@@ -2570,52 +2553,6 @@ impl PartialPath {
             .scope_stack_postcondition
             .apply_partial_bindings(partials, &scope_bindings)
             .unwrap();
-    }
-
-    /// Keeps at most `max_depth` scopes in each scope stack of the postcondition: the top ones.
-    /// This covers the scope stack of the path and the attached scope list of each scoped symbol
-    /// on its symbol stack. A stack that has a variable stays as it is. The scopes that the
-    /// method drops are the oldest ones. A later jump to a dropped scope finds no scope, so the
-    /// path ends there. The method loses results and invents none. Returns whether it dropped
-    /// any scope.
-    pub fn limit_scope_depth(&mut self, partials: &mut PartialPaths, max_depth: usize) -> bool {
-        let mut limited = false;
-        if let Some(scopes) = self
-            .scope_stack_postcondition
-            .truncated(partials, max_depth)
-        {
-            self.scope_stack_postcondition = scopes;
-            limited = true;
-        }
-        let too_deep = self
-            .symbol_stack_postcondition
-            .iter_unordered(partials)
-            .any(|symbol| {
-                symbol.scopes.into_option().map_or(false, |scopes| {
-                    !scopes.has_variable() && scopes.len() > max_depth
-                })
-            });
-        if too_deep {
-            let symbols = self
-                .symbol_stack_postcondition
-                .iter(partials)
-                .collect::<Vec<_>>();
-            let mut stack = match self.symbol_stack_postcondition.variable() {
-                Some(variable) => PartialSymbolStack::from_variable(variable),
-                None => PartialSymbolStack::empty(),
-            };
-            for mut symbol in symbols {
-                if let Some(scopes) = symbol.scopes.into_option() {
-                    if let Some(scopes) = scopes.truncated(partials, max_depth) {
-                        symbol.scopes = ControlledOption::some(scopes);
-                    }
-                }
-                stack.push_back(partials, symbol);
-            }
-            self.symbol_stack_postcondition = stack;
-            limited = true;
-        }
-        limited
     }
 
     /// Attempts to append an edge to the end of a partial path.  If the edge is not a valid

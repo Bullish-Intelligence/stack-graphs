@@ -946,8 +946,6 @@ pub struct ForwardPartialPathStitcher<H> {
     check_only_join_nodes: bool,
     max_work_per_phase: usize,
     limits: StitcherLimits,
-    /// See [`StitcherConfig::with_max_scope_depth`].
-    max_scope_depth: Option<usize>,
     /// The `PartialPaths` cell count when the stitcher started.
     arena_baseline: usize,
     /// The work done so far.  See [`StitcherLimits::max_work`].
@@ -1003,7 +1001,6 @@ impl<H> ForwardPartialPathStitcher<H> {
             // By default, there are no limits
             limits: StitcherLimits::default(),
             // By default, the scope stacks have no depth limit
-            max_scope_depth: None,
             arena_baseline: partials.allocated_cells(),
             work: 0,
             peak_queue_len: 0,
@@ -1063,11 +1060,6 @@ impl<H> ForwardPartialPathStitcher<H> {
     /// limits.
     pub fn set_limits(&mut self, limits: StitcherLimits) {
         self.limits = limits;
-    }
-
-    /// Sets the depth limit of the scope stacks. See [`StitcherConfig::with_max_scope_depth`][].
-    pub fn set_max_scope_depth(&mut self, max_scope_depth: Option<usize>) {
-        self.max_scope_depth = max_scope_depth;
     }
 
     /// Returns why a limit stopped the run or cut paths, or `None` if no limit had an effect.
@@ -1241,9 +1233,6 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
                     copious_debugging!("        is invalid: {:?}", err);
                     continue;
                 }
-            }
-            if let Some(max_scope_depth) = self.max_scope_depth {
-                new_partial_path.limit_scope_depth(partials, max_scope_depth);
             }
             new_cycle_detector.append(
                 &mut self.appended_paths,
@@ -1764,8 +1753,6 @@ pub struct StitcherConfig {
     collect_stats: bool,
     /// Limits on the cost of one run.
     limits: StitcherLimits,
-    /// The depth limit of the scope stacks.
-    max_scope_depth: Option<usize>,
 }
 
 impl StitcherConfig {
@@ -1831,24 +1818,6 @@ impl StitcherConfig {
         self.limits.max_path_length = max_path_length;
         self
     }
-
-    pub fn max_scope_depth(&self) -> Option<usize> {
-        self.max_scope_depth
-    }
-
-    /// Sets the depth limit of the scope stacks of the paths. A path keeps only the newest
-    /// `max_scope_depth` scopes of each scope stack. In a language that models calls with scoped
-    /// symbols, the scope stack holds the call sites of the call chain, and a path that follows
-    /// the value that a call returns grows the stack at each call. Two paths that differ only
-    /// in the older call sites are then never similar, and their number doubles at each level
-    /// where a function has two call sites. The limit merges those paths. The cost is that a
-    /// jump to a scope that the limit dropped finds no scope. Such a path ends, so a run can lose
-    /// results. It never gains a wrong one. The limit does not apply to the minimal partial path
-    /// sets of a file. The default is no limit.
-    pub fn with_max_scope_depth(mut self, max_scope_depth: Option<usize>) -> Self {
-        self.max_scope_depth = max_scope_depth;
-        self
-    }
 }
 
 impl StitcherConfig {
@@ -1857,7 +1826,6 @@ impl StitcherConfig {
         stitcher.set_shadow_aware_similar_paths(self.shadow_aware_similar_paths);
         stitcher.set_collect_stats(self.collect_stats);
         stitcher.set_limits(self.limits);
-        stitcher.set_max_scope_depth(self.max_scope_depth);
     }
 }
 
@@ -1868,7 +1836,6 @@ impl Default for StitcherConfig {
             shadow_aware_similar_paths: false,
             collect_stats: false,
             limits: StitcherLimits::default(),
-            max_scope_depth: None,
         }
     }
 }

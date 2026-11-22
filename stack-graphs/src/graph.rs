@@ -1719,9 +1719,11 @@ impl StackGraph {
     /// end in such a node, because it is not an endpoint, and no path can leave it. A path
     /// that enters it is never complete. The pruning removes the edges that enter a dead-end node.
     /// This is safe with the arena: no node is deleted, so no handle changes. The dead-end nodes
-    /// stay in the arena, but no edge of a kept node leads to them. The pruning does not change the
+    /// stay in the arena, but no edge leads to them or leaves them. The pruning does not change the
     /// incoming degree of a node that stays: an edge that it removes ends in a dead-end node, and
-    /// a dead-end node has edges to dead-end nodes only.
+    /// a dead-end node has edges to dead-end nodes only. The incoming degree of a dead-end node
+    /// becomes zero, as it is in a graph that is stored and loaded again. The one exception is a
+    /// dead-end node that has an edge from another file.
     ///
     /// Returns the number of dead-end nodes and the number of removed edges.
     pub fn prune_dead_end_scopes_in_file(&mut self, file: Handle<File>) -> (usize, usize) {
@@ -1784,6 +1786,21 @@ impl StackGraph {
             list.retain(|o| !is_dead.contains_key(&o.sink));
             removed += before - list.len();
         }
+        // A dead-end node has lost all its incoming edges from this file. Its degree must say so,
+        // or a graph that is stored and loaded again would differ from this one. A node that
+        // keeps an edge from another file stays as it is.
+        for &d in &dead {
+            let in_file = sources.get(&d).map_or(0, |v| v.len());
+            let degree = self.incoming_edge_degree(d);
+            let all_in_file = match degree {
+                Degree::Zero => false,
+                Degree::One => in_file == 1,
+                Degree::Multiple => in_file >= 2,
+            };
+            if all_in_file {
+                self.incoming_edges[d] = Degree::Zero;
+            }
+        }
         (dead.len(), removed)
     }
 
@@ -1795,9 +1812,11 @@ impl StackGraph {
     ///
     /// An edge `X -> S` of precedence `p`, where `S` has the single edge `S -> Z`, becomes
     /// `X -> Z` of precedence `p`.  The precedence of `S -> Z` has no effect: no other edge of
-    /// `S` can shadow it.  The method leaves the nodes that it bypasses in the graph, with their
-    /// edges, but no route from a kept node reaches them any more.  A redirection that would
-    /// duplicate an existing edge of `X` is skipped, so that no two routes merge into one.
+    /// `S` can shadow it.  The method removes the edge `S -> Z` when no edge enters `S` any more.
+    /// The node stays in the arena, with no edge and with the incoming degree zero.  So the graph
+    /// is equal to the graph that a storage load gives back.  A node with an edge from another file
+    /// (mode 2) keeps its edge.  A redirection that would duplicate an existing edge of `X` is
+    /// skipped, so that no two routes merge into one.  Then `S` keeps its edge.
     pub fn contract_plain_scopes_in_file(
         &mut self,
         file: Handle<File>,
@@ -1884,6 +1903,40 @@ impl StackGraph {
         for z in inexact_targets {
             if self.incoming_edge_degree(z) == Degree::One {
                 self.incoming_edges[z] = Degree::Multiple;
+            }
+        }
+        // Find the removable nodes that an edge still reaches: the ones that a kept node still
+        // names (a skipped redirection), the ones that have edges from other files, and the
+        // removable nodes behind them.
+        let mut live: FxHashMap<Handle<Node>, ()> = FxHashMap::default();
+        let mut work: Vec<Handle<Node>> = Vec::new();
+        for &x in &nodes {
+            if removable.contains_key(&x) {
+                continue;
+            }
+            for o in self.outgoing_edges.get(x).into_iter().flatten() {
+                if removable.contains_key(&o.sink) && live.insert(o.sink, ()).is_none() {
+                    work.push(o.sink);
+                }
+            }
+        }
+        for (&n, &(_, exact)) in &removable {
+            if !exact && live.insert(n, ()).is_none() {
+                work.push(n);
+            }
+        }
+        while let Some(n) = work.pop() {
+            let next = removable[&n].0;
+            if removable.contains_key(&next) && live.insert(next, ()).is_none() {
+                work.push(next);
+            }
+        }
+        // The other removable nodes are bypassed. The edge that left such a node now starts at
+        // the node that was before it, so the degree of its sink does not change.
+        for &n in removable.keys() {
+            if !live.contains_key(&n) {
+                self.outgoing_edges[n].clear();
+                self.incoming_edges[n] = Degree::Zero;
             }
         }
         stats.removable_nodes = removable.len();

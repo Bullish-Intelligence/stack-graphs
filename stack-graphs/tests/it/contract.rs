@@ -1,5 +1,6 @@
 // Tests for the contraction of plain scope nodes.
 
+use stack_graphs::graph::Degree;
 use stack_graphs::graph::StackGraph;
 use stack_graphs::partial::PartialPaths;
 use stack_graphs::stitching::ForwardPartialPathStitcher;
@@ -227,4 +228,144 @@ fn pruning_lets_a_chain_contract() {
     assert_eq!(1, stats.pruned_edges);
     assert_eq!(2, stats.removable_nodes);
     assert_eq!(vec![(4, 1)], complete(&graph, file));
+}
+
+/// What a graph says about the nodes of one file: for each local id, the incoming degree and the
+/// outgoing edges (sink local id and precedence).
+fn snapshot(
+    graph: &StackGraph,
+    file: stack_graphs::arena::Handle<stack_graphs::graph::File>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for node in graph.nodes_for_file(file) {
+        let mut edges = graph
+            .outgoing_edges(node)
+            .map(|e| (graph[e.sink].id().local_id(), e.precedence))
+            .collect::<Vec<_>>();
+        edges.sort();
+        lines.push(format!(
+            "{}: {:?} {:?}",
+            graph[node].id().local_id(),
+            graph.incoming_edge_degree(node),
+            edges
+        ));
+    }
+    lines.sort();
+    lines
+}
+
+/// Loads a graph into a new graph, as a storage load does, and returns the new graph and its file.
+fn reload(
+    graph: &StackGraph,
+) -> (
+    StackGraph,
+    stack_graphs::arena::Handle<stack_graphs::graph::File>,
+) {
+    let mut loaded = StackGraph::new();
+    loaded.add_from_graph(graph).unwrap();
+    let file = loaded.iter_files().next().unwrap();
+    (loaded, file)
+}
+
+fn assert_reload_equal(
+    graph: &StackGraph,
+    file: stack_graphs::arena::Handle<stack_graphs::graph::File>,
+    what: &str,
+) {
+    let (loaded, loaded_file) = reload(graph);
+    assert_eq!(
+        snapshot(graph, file),
+        snapshot(&loaded, loaded_file),
+        "{what}"
+    );
+}
+
+#[test]
+fn contraction_leaves_no_edge_at_a_bypassed_node() {
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("bypass").unwrap();
+    let r = create_push_symbol_node(&mut graph, file, "x", true);
+    let s = create_scope_node(&mut graph, file, false);
+    let z = create_pop_symbol_node(&mut graph, file, "x", true);
+    graph.add_edge(r, s, 0);
+    graph.add_edge(s, z, 0);
+    graph.simplify_file(file);
+    assert_eq!(Degree::One, graph.incoming_edge_degree(z));
+    assert_eq!(0, graph.outgoing_edges(s).count());
+    assert_eq!(Degree::Zero, graph.incoming_edge_degree(s));
+    let (loaded, loaded_file) = reload(&graph);
+    let loaded_z = loaded
+        .nodes_for_file(loaded_file)
+        .find(|n| loaded[*n].is_definition())
+        .unwrap();
+    assert_eq!(Degree::One, loaded.incoming_edge_degree(loaded_z));
+    let edges: usize = loaded
+        .nodes_for_file(loaded_file)
+        .map(|n| loaded.outgoing_edges(n).count())
+        .sum();
+    assert_eq!(1, edges);
+    assert_reload_equal(&graph, file, "r -> s -> z");
+}
+
+#[test]
+fn a_contracted_graph_equals_the_reloaded_graph() {
+    // A chain, with a precedence on the first edge.
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("chain").unwrap();
+    let r = create_push_symbol_node(&mut graph, file, "x", true);
+    let s1 = create_scope_node(&mut graph, file, false);
+    let s2 = create_scope_node(&mut graph, file, false);
+    let z = create_pop_symbol_node(&mut graph, file, "x", true);
+    graph.add_edge(r, s1, 3);
+    graph.add_edge(s1, s2, 0);
+    graph.add_edge(s2, z, 0);
+    graph.simplify_file(file);
+    assert_reload_equal(&graph, file, "chain");
+
+    // A diamond: one redirection is skipped, so one scope node keeps its edge.
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("diamond").unwrap();
+    let r = create_push_symbol_node(&mut graph, file, "x", true);
+    let a = create_scope_node(&mut graph, file, false);
+    let b = create_scope_node(&mut graph, file, false);
+    let z = create_pop_symbol_node(&mut graph, file, "x", true);
+    graph.add_edge(r, a, 0);
+    graph.add_edge(r, b, 0);
+    graph.add_edge(a, z, 0);
+    graph.add_edge(b, z, 0);
+    graph.simplify_file(file);
+    assert_reload_equal(&graph, file, "diamond");
+
+    // A dead-end chain next to a chain that contracts.
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("dead").unwrap();
+    let r = create_push_symbol_node(&mut graph, file, "x", true);
+    let a = create_scope_node(&mut graph, file, false);
+    let b = create_scope_node(&mut graph, file, false);
+    let dead1 = create_scope_node(&mut graph, file, false);
+    let dead2 = create_scope_node(&mut graph, file, false);
+    let z = create_pop_symbol_node(&mut graph, file, "x", true);
+    graph.add_edge(r, a, 0);
+    graph.add_edge(a, b, 0);
+    graph.add_edge(a, dead1, 0);
+    graph.add_edge(dead1, dead2, 0);
+    graph.add_edge(b, z, 0);
+    graph.simplify_file(file);
+    assert_reload_equal(&graph, file, "dead-end");
+}
+
+#[test]
+fn contraction_mode_two_keeps_the_edge_of_a_node_with_another_entry() {
+    let mut graph = StackGraph::new();
+    let file = graph.add_file("join").unwrap();
+    let r1 = create_push_symbol_node(&mut graph, file, "x", true);
+    let r2 = create_push_symbol_node(&mut graph, file, "x", true);
+    let s = create_scope_node(&mut graph, file, false);
+    let z = create_pop_symbol_node(&mut graph, file, "x", true);
+    graph.add_edge(r1, s, 0);
+    graph.add_edge(r2, s, 0);
+    graph.add_edge(s, z, 0);
+    graph.contract_plain_scopes_in_file(file, 2);
+    assert_eq!(Degree::Multiple, graph.incoming_edge_degree(z));
+    assert_eq!(1, graph.outgoing_edges(s).count());
 }

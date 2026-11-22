@@ -147,11 +147,10 @@ fn diamond(levels: usize) -> String {
 
 const QUEUE_LIMIT: usize = 2_000;
 
-fn limited(depth: Option<usize>) -> StitcherConfig {
+fn limited() -> StitcherConfig {
     StitcherConfig::default()
         .with_max_queue_len(Some(QUEUE_LIMIT))
         .with_max_work(Some(1_000_000))
-        .with_max_scope_depth(depth)
 }
 
 #[test]
@@ -159,7 +158,7 @@ fn branching_call_sites_double_the_queue_at_each_level() {
     // Without a limit, the peak queue is 2^(levels + 1). These sizes stay under the queue limit.
     let mut previous = 0;
     for levels in [4, 6, 8] {
-        let found = search(&diamond(levels), "foo", limited(None));
+        let found = search(&diamond(levels), "foo", limited());
         assert_eq!(None, found.bounded, "levels {levels}");
         assert_eq!(1 << (levels + 1), found.peak_queue_len, "levels {levels}");
         assert_eq!(vec![1], found.lines);
@@ -169,69 +168,9 @@ fn branching_call_sites_double_the_queue_at_each_level() {
 }
 
 #[test]
-fn a_deep_chain_hits_the_queue_limit_without_a_depth_limit() {
-    let found = search(&diamond(16), "foo", limited(None));
+fn a_deep_chain_hits_the_queue_limit() {
+    let found = search(&diamond(16), "foo", limited());
     assert_eq!(Some(StitchBound::QueueLength), found.bounded);
-}
-
-#[test]
-fn a_depth_limit_stops_the_growth_and_keeps_the_target() {
-    for depth in [1, 2, 3] {
-        let mut peaks = Vec::new();
-        let mut works = Vec::new();
-        for levels in [8, 16, 32] {
-            let found = search(&diamond(levels), "foo", limited(Some(depth)));
-            assert_eq!(None, found.bounded, "depth {depth} levels {levels}");
-            assert_eq!(vec![1], found.lines, "depth {depth} levels {levels}");
-            peaks.push(found.peak_queue_len);
-            works.push(found.work);
-        }
-        // The queue does not grow with the levels. The work grows less than the square.
-        assert_eq!(
-            peaks[0],
-            peaks[2],
-            "{}",
-            format!("depth {depth}: {peaks:?}")
-        );
-        assert!(
-            works[2] < 8 * works[0],
-            "{}",
-            format!("depth {depth}: {works:?}")
-        );
-    }
-}
-
-/// A value that passes through two functions as a parameter needs two scopes in the stack.
-const TWO_LEVELS: &str = "class D:
-    foo = 1
-
-def mk(a):
-    return a
-
-def wrap(b):
-    return mk(b)
-
-x = wrap(D())
-y = x.foo
-";
-
-#[test]
-fn a_depth_limit_keeps_results_that_need_few_scopes_and_loses_deeper_ones() {
-    let unlimited = search(TWO_LEVELS, "foo", StitcherConfig::default());
-    assert_eq!(vec![1], unlimited.lines);
-    let depth_two = search(
-        TWO_LEVELS,
-        "foo",
-        StitcherConfig::default().with_max_scope_depth(Some(2)),
-    );
-    assert_eq!(vec![1], depth_two.lines);
-    // The limit loses a result. It never finds a different one.
-    let depth_one = search(
-        TWO_LEVELS,
-        "foo",
-        StitcherConfig::default().with_max_scope_depth(Some(1)),
-    );
-    assert!(depth_one.lines.is_empty());
 }
 
 /// A class with `methods` methods that store nothing. The reference `m0` is on the last line.
