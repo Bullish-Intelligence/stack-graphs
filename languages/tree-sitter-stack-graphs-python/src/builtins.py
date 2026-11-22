@@ -104,8 +104,10 @@ class type:
     __annotations__ = None
     __annotate__ = None
 
-class super:
-    def __init__(self, *args, **kwargs): ...
+# The class has no `__init__` of its own. A call of `super().__init__()` reaches the `__init__` of
+# `object` when no base class of the caller has one.
+class super(object):
+    pass
 
 class int:
     def __new__(cls, *args, **kwargs): ...

@@ -103,7 +103,8 @@ Bottom.class_attr
 Bottom().instance_attr
 #        ^ defined: 7
 
-# In a diamond, a member that both sides define is ambiguous.
+# In a diamond, the first base wins over the second base, as Python searches the bases from left to
+# right. The class `LeftOwn` comes first.
 class LeftOwn(A):
     def own(self):
         pass
@@ -116,4 +117,4 @@ class BottomOwn(LeftOwn, RightOwn):
     pass
 
 BottomOwn().own
-#           ^ defined: 108, 112
+#           ^ defined: 109

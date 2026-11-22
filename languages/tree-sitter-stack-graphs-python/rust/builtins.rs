@@ -190,7 +190,23 @@ fn builtin_function_isinstance() {
 #[test]
 fn builtin_class() {
     assert_builtin("x = int('1')\n", "int", "class int:");
-    assert_builtin("x = super()\n", "super", "class super:");
+    assert_builtin("x = super()\n", "super", "class super(object):");
+}
+
+#[test]
+fn super_init_reaches_object_when_no_base_has_init() {
+    // `C` has no `__init__`, so `super().__init__()` in `D` reaches `object`, not the class `super`.
+    let source = "class C:\n    pass\n\nclass D(C):\n    def __init__(self):\n        super().__init__()\n";
+    assert_member(source, "__init__", "object", "def __init__(self, *args, **kwargs): ...");
+    let source = "class D:\n    def __init__(self):\n        super(D, self).__init__()\n";
+    assert_member(source, "__init__", "object", "def __init__(self, *args, **kwargs): ...");
+}
+
+#[test]
+fn super_init_reaches_base_init_not_object() {
+    // `C` has an `__init__`: the call reaches it, and the builtin `object` is no target.
+    let source = "class C:\n    def __init__(self):\n        pass\n\nclass D(C):\n    def __init__(self):\n        super().__init__()\n";
+    assert_eq!(resolve(source, "__init__"), vec![Target::Local(1)]);
 }
 
 #[test]

@@ -1534,6 +1534,31 @@ inherit .type_param_scope
   edge @class.super_scope -> @superclass.output
 }
 
+; A base class that stands earlier in the list wins over a later one. A member of the first base
+; shadows a member of the second base. A member that only a later base has still resolves.
+; This is a left-to-right, depth-first search of the bases. It is not the C3 linearization of
+; Python. In a diamond it can differ from Python: for `class D(B, C)` with `B(A)` and `C(A)`, the
+; search reaches `A` through `B` before it reaches `C`, so a member that `A` and `C` both define
+; resolves to `A`, and Python reads `C` first. The first, second, and third base get the
+; precedences 3, 2, and 1. A base that stands later than the third keeps the precedence 0.
+(class_definition
+  superclasses: (argument_list . (expression) @superclass)) @class
+{
+  attr (@class.super_scope -> @superclass.output) precedence = 3
+}
+
+(class_definition
+  superclasses: (argument_list . (expression) . (expression) @superclass)) @class
+{
+  attr (@class.super_scope -> @superclass.output) precedence = 2
+}
+
+(class_definition
+  superclasses: (argument_list . (expression) . (expression) . (expression) @superclass)) @class
+{
+  attr (@class.super_scope -> @superclass.output) precedence = 1
+}
+
 ; The keyword paths and the model questions reach the base classes through the keyword super
 ; scope. It leads to the super scope. A generic base class, `class B(A[T])`, is the class `A`, but
 ; only for these paths. A lookup of a member does not follow it: the work of the lookups would grow.
@@ -2104,6 +2129,9 @@ inherit .type_param_scope
 )
 {
   edge @call.output -> @call.class_super_scope
+  ; The call of `super()` gives the base classes. It shadows the instance of the builtin class
+  ; `super`, which the generic rule of a call also reaches.
+  attr (@call.output -> @call.class_super_scope) precedence = 1
 }
 
 (list (_) @el) @list
