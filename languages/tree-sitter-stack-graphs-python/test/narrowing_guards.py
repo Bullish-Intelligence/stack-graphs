@@ -66,3 +66,33 @@ def control(x):
     assert isinstance(x, Sub)
     x.sub_only
     # ^ defined: 9
+
+# A parenthesized condition of an `elif` narrows the body.
+def elif_parenthesized(x, flag):
+    if flag:
+        pass
+    elif (isinstance(x, Sub)):
+        x.sub_only
+        # ^ defined: 9
+    elif (flag and isinstance(x, Sub)):
+        x.sub_only
+        # ^ defined: 9
+
+# The call must stand in the condition slot of a conditional expression. As the value after
+# `else`, it narrows nothing.
+def conditional_else(x, y):
+    return x.sub_only if y else isinstance(x, Sub)
+           # ^ defined:
+
+def conditional_both(x, y):
+    return x.sub_only if isinstance(x, Sub) else x.sub_only
+           # ^ defined: 9
+
+# A comment between the value and the condition does not move the condition slot.
+def conditional_comment(x, y):
+    return (
+        x.sub_only  # a comment
+        # ^ defined: 9
+        if isinstance(x, Sub)
+        else y
+    )

@@ -3575,8 +3575,11 @@ inherit .narrow_scope
 
 ;; More guards. These forms narrow like the guards above.
 ;; - `assert isinstance(x, A) and isinstance(x, B)`: the statements after the assert,
-;; - a condition in parentheses: `if (isinstance(x, C) and ...):`,
-;; - `isinstance(x, C)` as the condition of a conditional expression: the value before `if`,
+;; - a condition in parentheses: `if (isinstance(x, C) and ...):`, also for `elif`,
+;; - `isinstance(x, C)` as the condition of a conditional expression: the value before `if`. The
+;;   call must stand in the condition slot. In `x.a if y else isinstance(x, C)`, it is the value
+;;   after `else`, so nothing narrows. A comment between the value and the condition does not move
+;;   the slot,
 ;; - `not isinstance(x, C) or ...`: the right operand, and the statements after an `if` of this
 ;;   condition, when its body ends with `return`, `raise`, `continue`, or `break`.
 
@@ -3649,6 +3652,9 @@ inherit .narrow_scope
       condition: (parenthesized_expression (boolean_operator left: (boolean_operator operator: "and" right: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) operator: "and"))
       consequence: (block (_) @stmt))
     (elif_clause
+      condition: (parenthesized_expression (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call)
+      consequence: (block (_) @stmt))
+    (elif_clause
       condition: (parenthesized_expression (boolean_operator left: (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call operator: "and"))
       consequence: (block (_) @stmt))
     (elif_clause
@@ -3665,7 +3671,8 @@ inherit .narrow_scope
 (
   (conditional_expression
     . (_) @body
-    (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) @op
+    . (comment)*
+    . (call function: (identifier) @_isinstance arguments: (argument_list . (_) . (_) .)) @call) @op
   (#eq? @_isinstance "isinstance")
 )
 {
