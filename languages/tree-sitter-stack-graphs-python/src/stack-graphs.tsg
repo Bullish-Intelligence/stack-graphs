@@ -247,7 +247,6 @@ inherit .declared_names
 inherit .enclosing_scope
 inherit .final_scope
 inherit .function_returns
-inherit .no_class_gate
 inherit .global
 inherit .global_dot
 inherit .relative_entry
@@ -412,63 +411,43 @@ inherit .type_param_scope
 ;; A call of an annotated function follows the return annotation only. This works when the
 ;; annotation names a class. It does not work when the annotation names no class. These
 ;; annotations name no class:
-;; - `Self`, `Any`, and `Type[...]` or `type[...]`,
+;; - a type variable: `T = TypeVar("T")`, `ParamSpec`, `TypeVarTuple`, `TypeAliasType`, and
+;;   `AnyStr`,
+;; - a type parameter of a `def`, a `class`, or a `type` statement: `def first[T](...) -> T`,
+;; - a type alias: `X: TypeAlias = ...`, `type X = ...`, or an assignment of a subscript or a union
+;;   written with a bar at the top level of a module,
+;; - `Self` and `Any`,
+;; - `Type[...]` or `type[...]`,
 ;; - a string that holds more than a plain name, like `-> "Foo | None"`,
 ;;   `-> "typing.Optional[Foo]"`, or the dotted name `-> "mod.Foo"`. The annotation rules
 ;;   resolve a string that holds one plain name, as `-> "Foo"` or `-> Optional["Foo"]`, like the
 ;;   bare name, so such a string follows the annotation only, as a bare class name does. They
-;;   have no rule for a dotted name in a string, so the gate keeps the body route for it. A
+;;   have no rule for a dotted name in a string, so the body route stays for it. A
 ;;   store like `o.x = x` after `o = self.copy()` has the name of the field on both sides. The
 ;;   stitcher keeps one more similar path for the reference at such a store, so the annotation
-;;   route survives. See `add_path_shadow_aware`,
-;; - a name that the file binds with `TypeVar(...)`, `ParamSpec(...)`, `TypeVarTuple(...)`, or
-;;   `TypeAliasType(...)`,
-;; - a type parameter of a `def` or a `class`: `def first[T](...) -> T`,
-;; - a name that the file binds as a type alias: `X: TypeAlias = ...`, `type X = ...`, or a line
-;;   without indent that assigns a subscript or a union written with a bar.
-;; The rules read the file text for these names. The gate pattern holds the words that name no
-;; class. A condition cannot read a scoped variable, so the graph decides. The function has a
-;; gate node that pushes the symbol "<tv>" when the annotation matches the pattern, and any other
-;; symbol when it does not. The marker node pops "<tv>" and jumps to the returns of the body.
-;; A function with such an annotation keeps the value following of its `return` statements
-;; next to the annotation.
-
-(module) @mod
-{
-  var names = "Self|Any|TYPEOF"
-  scan (format "\n{}" (source-text @mod)) {
-    "\n[ \\t]*(\\w+)[ \\t]*(?::[^=\\n]*)?=[ \\t]*(?:\\w+\\.)*(?:TypeVar|ParamSpec|TypeVarTuple|TypeAliasType)\\("
-    {
-      set names = (format "{}|{}" names $1)
-    }
-    "\n[ \\t]*(\\w+)[ \\t]*:[ \\t]*[\"']?(?:\\w+\\.)*\\w*TypeAlias\\b"
-    {
-      set names = (format "{}|{}" names $1)
-    }
-    "\n[ \\t]*type[ \\t]+(\\w+)"
-    {
-      set names = (format "{}|{}" names $1)
-    }
-    "\n(\\w+)[ \\t]*=[ \\t]*[\\w.]+\\["
-    {
-      set names = (format "{}|{}" names $1)
-    }
-    "\n(\\w+)[ \\t]*=[ \\t]*[\\w.]+[ \\t]*\\|"
-    {
-      set names = (format "{}|{}" names $1)
-    }
-    "\n[ \\t]*(?:async[ \\t]+)?(?:def|class)[ \\t]+\\w+\\[([^\\]]+)\\]"
-    {
-      let squeezed = (replace $1 "[ \\t\\n*]" "")
-      let unbound = (replace squeezed "[:=][^,]*" "")
-      let words = (replace unbound "[^\\w,]" "")
-      let listed = (replace (replace words ",+$" "") ",+" "|")
-      set names = (format "{}|{}" names listed)
-    }
-  }
-  ; A pattern that matches a whole annotation when a word of the annotation names no class.
-  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"'][^\"']*[^\\w\"'][^\"']*[\"']).*$" names)
-}
+;;   route survives. See `add_path_shadow_aware`.
+;;
+;; A function with such an annotation keeps the value following of its `return` statements next to
+;; the annotation. The graph decides this, in any file and under any name:
+;; - The return annotation pushes the "()" symbol of the instance. The scope of this symbol is the
+;;   scope of the returns of the body (`function_returns`).
+;; - A definition that names no class pops this "()" symbol and jumps to its scope. See
+;;   "Definitions that name no class". A class pops the symbol too, and drops the scope, so a class
+;;   leaves the body route unused.
+;; - The path of a reference like `f(1).method` then continues in the returns of the body.
+;;
+;; A path reaches the definition through imports, `import *`, a renamed import, a dotted name, a
+;; string, `T | None`, or `Optional[T]`.
+;;
+;; The text of the annotation decides three cases, because no definition stands behind them:
+;; - `Self` and `Any` also come from `typing_extensions`, which has no stub, so the gate pattern
+;;   keeps both words. The definitions of the typing stub cover a renamed import.
+;; - `Type[...]` and `type[...]` name the class `type`, and a call of `type(...)` is no type form.
+;; - A string with more than a name has no annotation rule at all.
+;; The gate pattern below holds these words. A condition cannot read a scoped variable, so the graph
+;; decides. The function has a gate node that pushes the symbol "<tv>" when the annotation matches
+;; the pattern, and any other symbol when it does not. The marker node pops "<tv>" and jumps to the
+;; returns of the body.
 
 ;;
 ;; ###
@@ -3388,12 +3367,14 @@ inherit .type_param_scope
 (function_definition return_type: (type) @type) @func
 {
   node instance
-  attr (instance) push_scoped_symbol = "()", scope = @func.literal_scope
+  ; The scope of the "()" symbol is the returns of the body. A definition that names no class
+  ; jumps to it. See "Definitions that name no class".
+  attr (instance) push_scoped_symbol = "()", scope = @func.function_returns
   edge @func.ret_value -> instance
   edge instance -> @type.annot
-  ; Keep the value following of the body when the annotation names no class. Wrappers like
-  ; Optional become a parenthesis. A subscript of another container collapses to X. Type[...] and
-  ; type[...] become TYPEOF. Then only the names of the annotation itself remain.
+  ; Keep the value following of the body when the text of the annotation names no class. Wrappers
+  ; like Optional become a parenthesis. A subscript of another container collapses to X.
+  ; Type[...] and type[...] become TYPEOF. Then only the names of the annotation itself remain.
   let written = (source-text @type)
   let unwrapped = (replace written "\\b(?:Optional|Union|Annotated|ClassVar|Final|Required|NotRequired|ReadOnly)\\[" "(")
   let typed = (replace unwrapped "\\b(?:Type|type)[ \\t]*\\[" "TYPEOF(")
@@ -3402,12 +3383,170 @@ inherit .type_param_scope
   let flat3 = (replace flat2 "\\w*\\[[^\\[\\]]*\\]" "X")
   node gate
   node marker
-  attr (gate) push_scoped_symbol = (replace flat3 @func.no_class_gate "<tv>"), scope = @func.function_returns
+  ; The pattern matches a whole annotation that holds `Self`, `Any`, `TYPEOF`, or a string with
+  ; more than a name.
+  attr (gate) push_scoped_symbol = (replace flat3 "(?s)^.*(?:\\b(?:Self|Any|TYPEOF)\\b|[\"'][^\"']*[^\\w\"'][^\"']*[\"']).*$" "<tv>"), scope = @func.function_returns
   attr (marker) pop_scoped_symbol = "<tv>"
   attr (@func.function_returns) is_exported
   edge @func.ret_value -> gate
   edge gate -> marker
   edge marker -> JUMP_TO_SCOPE_NODE
+}
+
+;;;; Definitions that name no class
+;;
+;; The return annotation pushes the "()" symbol with the scope of the returns of the body. When
+;; the name of the annotation reaches one of these definitions, the path pops the "()" symbol and
+;; jumps to that scope. A class definition pops the "()" symbol too, but it drops the scope.
+;;
+;; A definition of one of these kinds names no class:
+;; - a type parameter of a `def`, a `class`, or a `type` statement,
+;; - a name that `type X = ...` defines,
+;; - a name that `X: TypeAlias = ...` defines, also as `typing.TypeAlias` or `_TypeAlias`,
+;; - a name that a module binds to a subscript or to a union written with a bar, as
+;;   `X = Union[A, B]`, `X = list[A]`, or `X = A | B`,
+;; - a name that an assignment binds to a call of `TypeVar`, `ParamSpec`, `TypeVarTuple`, or
+;;   `TypeAliasType`, also behind a module name or a leading underscore,
+;; - `Self` and `AnyStr`, as the typing stub binds them, and the class `Any`.
+;;
+;; The classes `TypeVar`, `ParamSpec`, `TypeVarTuple`, and `TypeAliasType` have a second route.
+;; Their instances are type variables. A name that a call of such a class gives, or a call of a
+;; function that returns it, is a type variable, whatever the call is called, or how the
+;; assignment is written (a tuple of targets, for example). The path pops the "()" symbol of
+;; the call, then the "()" symbol of the annotation.
+;;
+;; The definition of the name of a type parameter or of a type statement is its `def` node. The
+;; definition of the name of an assignment is its `input` node, which leads to the value.
+
+(type_alias_statement . (type [
+  (identifier) @name
+  (generic_type . (identifier) @name)
+]))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(function_definition type_parameters: (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ])))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(class_definition type_parameters: (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ])))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(type_alias_statement . (type (generic_type (type_parameter (type [
+    (identifier) @name
+    (constrained_type . (type (identifier) @name))
+    (splat_type (identifier) @name)
+  ])))))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(class_definition
+  name: (identifier) @name
+  (#eq? @name "Any"))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+;; The name of an assignment binds at its input node, which leads to the value.
+
+(assignment
+  left: (identifier) @name
+  type: (type) @_annotation
+  (#match? @_annotation "^[\"']?(?:\\w+\\.)*\\w*TypeAlias[\"']?$"))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.input -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(assignment
+  left: (identifier) @name
+  right: (call function: [
+    (identifier)
+    (attribute attribute: (identifier))
+  ] @_callee)
+  (#match? @_callee "(?:^|\\.)_?(?:TypeVar|ParamSpec|TypeVarTuple|TypeAliasType)$"))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.input -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (subscript value: [(identifier) (attribute)]))))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.input -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (binary_operator) @_union
+  (#match? @_union "^[\\w.]+[ \\t]*\\|"))))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.input -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  (#match? @name "^(?:Self|AnyStr)$"))))
+{
+  node pop
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.input -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+(class_definition
+  name: (identifier) @name
+  (#match? @name "^(?:TypeVar|ParamSpec|TypeVarTuple|TypeAliasType)$"))
+{
+  node call
+  node drop
+  node pop
+  attr (call) pop_scoped_symbol = "()"
+  attr (drop) type = "drop_scopes"
+  attr (pop) pop_scoped_symbol = "()"
+  edge @name.def -> call
+  edge call -> drop
+  edge drop -> pop
+  edge pop -> JUMP_TO_SCOPE_NODE
 }
 
 ;;;; isinstance narrowing
