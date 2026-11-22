@@ -1201,7 +1201,7 @@ impl<'a> Builder<'a> {
             }
             let containing_line = &self.source[source_span.start.containing_line.clone()];
             let containing_line = self.stack_graph.add_string(containing_line);
-            let source_info = self.stack_graph.source_info_mut(node_handle);
+            let mut source_info = self.stack_graph.source_info_mut(node_handle);
             source_info.span = source_span;
             source_info.containing_line = ControlledOption::some(containing_line);
         }
@@ -1209,7 +1209,7 @@ impl<'a> Builder<'a> {
         if let Some(syntax_type) = node.attributes.get(SYNTAX_TYPE_ATTR) {
             let syntax_type = syntax_type.as_str()?;
             let syntax_type = self.stack_graph.add_string(syntax_type);
-            let source_info = self.stack_graph.source_info_mut(node_handle);
+            let mut source_info = self.stack_graph.source_info_mut(node_handle);
             source_info.syntax_type = syntax_type.into();
         }
 
@@ -1228,7 +1228,7 @@ impl<'a> Builder<'a> {
             None => return Ok(()),
         };
         let definiens_span = self.span_calculator.for_node(definiens_node);
-        let source_info = self.stack_graph.source_info_mut(node_handle);
+        let mut source_info = self.stack_graph.source_info_mut(node_handle);
         source_info.definiens_span = definiens_span;
         Ok(())
     }

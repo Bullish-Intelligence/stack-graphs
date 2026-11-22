@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use maplit::hashset;
-use stack_graphs::graph::{Degree, StackGraph};
+use stack_graphs::graph::{Degree, NodeID, StackGraph};
 
 use crate::test_graphs;
 use crate::test_graphs::CreateStackGraph;
@@ -234,4 +234,82 @@ fn can_get_incoming_edges() {
     assert_eq!(Degree::Zero, graph.incoming_edge_degree(h3));
     graph.add_edge(h3, h1, 0);
     assert_eq!(Degree::One, graph.incoming_edge_degree(h1));
+}
+
+fn span(line: usize, start: usize, end: usize) -> lsp_positions::Span {
+    let position = |column: usize| lsp_positions::Position {
+        line,
+        column: lsp_positions::Offset {
+            utf8_offset: column,
+            utf16_offset: column + 1,
+            grapheme_offset: column + 2,
+        },
+        containing_line: 100 * (line % 1000)..100 * (line % 1000) + 90,
+        trimmed_line: 100 * (line % 1000) + 4..100 * (line % 1000) + 80,
+    };
+    lsp_positions::Span {
+        start: position(start),
+        end: position(end),
+    }
+}
+
+#[test]
+fn source_info_keeps_every_field() {
+    let mut graph = StackGraph::new();
+    let file = graph.get_or_create_file("test.py");
+    let a = graph.add_scope_node(NodeID::new_in_file(file, 0), false).unwrap();
+    let b = graph.add_scope_node(NodeID::new_in_file(file, 1), false).unwrap();
+    let c = graph.add_scope_node(NodeID::new_in_file(file, 2), false).unwrap();
+    let d = graph.add_scope_node(NodeID::new_in_file(file, 3), false).unwrap();
+    let syntax_type = graph.add_string("function");
+    let line = graph.add_string("def f(): pass");
+    let name = graph.add_string("m.f");
+
+    // A node after the last node with source info has none.
+    assert!(graph.source_info(d).is_none());
+
+    {
+        let mut info = graph.source_info_mut(b);
+        info.span = span(3, 4, 9);
+        info.syntax_type = syntax_type.into();
+        info.containing_line = line.into();
+        info.definiens_span = span(3, 12, 20);
+        info.fully_qualified_name = name.into();
+    }
+    // A node below the last node with source info reads as the default value.
+    let default = graph.source_info(a).unwrap();
+    assert_eq!(default.span, lsp_positions::Span::default());
+    assert!(default.syntax_type.into_option().is_none());
+
+    let info = graph.source_info(b).unwrap();
+    assert_eq!(info.span, span(3, 4, 9));
+    assert_eq!(info.definiens_span, span(3, 12, 20));
+    assert_eq!(info.syntax_type.into_option(), Some(syntax_type));
+    assert_eq!(info.containing_line.into_option(), Some(line));
+    assert_eq!(info.fully_qualified_name.into_option(), Some(name));
+    assert_eq!(graph.syntax_type(b), Some(syntax_type));
+    assert_eq!(graph.syntax_type(a), None);
+
+    // A change of one field keeps the others, and a definiens span can go back to none.
+    graph.source_info_mut(b).span = span(5, 0, 2);
+    graph.source_info_mut(b).definiens_span = lsp_positions::Span::default();
+    let info = graph.source_info(b).unwrap();
+    assert_eq!(info.span, span(5, 0, 2));
+    assert_eq!(info.definiens_span, lsp_positions::Span::default());
+    assert_eq!(info.syntax_type.into_option(), Some(syntax_type));
+    graph.source_info_mut(b).definiens_span = span(6, 1, 2);
+    assert_eq!(graph.source_info(b).unwrap().definiens_span, span(6, 1, 2));
+
+    // A value that does not fit in 32 bits keeps its value.
+    let huge = usize::MAX / 2;
+    *graph.source_info_mut(c) = stack_graphs::graph::SourceInfo {
+        span: span(huge, 1, 2),
+        syntax_type: syntax_type.into(),
+        ..Default::default()
+    };
+    assert_eq!(graph.source_info(c).unwrap().span, span(huge, 1, 2));
+    assert_eq!(graph.syntax_type(c), Some(syntax_type));
+    graph.source_info_mut(c).span = span(1, 1, 2);
+    assert_eq!(graph.source_info(c).unwrap().span, span(1, 1, 2));
+    assert_eq!(graph.syntax_type(c), Some(syntax_type));
 }

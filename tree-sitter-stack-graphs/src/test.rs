@@ -748,7 +748,7 @@ impl Test {
     }
 
     /// Get source info for a node, using a heuristic to rule default null source info results.
-    fn get_source_info(&self, node: Handle<Node>) -> Option<&SourceInfo> {
+    fn get_source_info(&self, node: Handle<Node>) -> Option<SourceInfo> {
         self.graph.source_info(node).filter(|si| {
             !(si.span.start.line == 0
                 && si.span.start.column.utf8_offset == 0

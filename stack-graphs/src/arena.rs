@@ -452,11 +452,6 @@ impl<H, T> SupplementalArena<H, T> {
             .map(|x| unsafe { &mut *(x.as_mut_ptr()) })
     }
 
-    /// Returns a pointer to this arena's storage.
-    pub(crate) fn as_ptr(&self) -> *const T {
-        self.items.as_ptr() as *const T
-    }
-
     /// Returns the number of instances stored in this arena.
     #[inline(always)]
     pub fn len(&self) -> usize {

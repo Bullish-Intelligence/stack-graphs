@@ -50,6 +50,7 @@
 //! [`File`]: struct.File.html
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fmt::Display;
 use std::num::NonZeroU32;
 use std::ops::Index;
@@ -1346,7 +1347,7 @@ impl StackGraph {
 
 /// Contains information about a range of code in a source code file.
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SourceInfo {
     /// The location in its containing file of the source code that this node represents.
     pub span: lsp_positions::Span,
@@ -1366,14 +1367,304 @@ pub struct SourceInfo {
 
 impl StackGraph {
     /// Returns information about the source code that a stack graph node represents.
-    pub fn source_info(&self, node: Handle<Node>) -> Option<&SourceInfo> {
+    ///
+    /// The graph stores source information in a compact form. This function builds the value.
+    /// To read the syntax type only, use [`syntax_type`][StackGraph::syntax_type].
+    pub fn source_info(&self, node: Handle<Node>) -> Option<SourceInfo> {
         self.source_info.get(node)
     }
 
+    /// Returns the syntax type of a node, if the node has source information and a syntax type.
+    #[inline]
+    pub fn syntax_type(&self, node: Handle<Node>) -> Option<Handle<InternedString>> {
+        self.source_info.syntax_type(node)
+    }
+
     /// Returns a mutable reference to the information about the source code that a stack graph
-    /// node represents.
-    pub fn source_info_mut(&mut self, node: Handle<Node>) -> &mut SourceInfo {
-        &mut self.source_info[node]
+    /// node represents. The graph stores the changes when the reference goes out of scope.
+    pub fn source_info_mut(&mut self, node: Handle<Node>) -> SourceInfoMut<'_> {
+        let info = self.source_info.get_for_update(node);
+        SourceInfoMut {
+            table: &mut self.source_info,
+            node,
+            info,
+        }
+    }
+}
+
+/// A mutable reference to the source information of a node. It dereferences to a
+/// [`SourceInfo`][]. The graph stores the new value when this reference goes out of scope.
+pub struct SourceInfoMut<'a> {
+    table: &'a mut SourceInfoTable,
+    node: Handle<Node>,
+    info: SourceInfo,
+}
+
+impl std::ops::Deref for SourceInfoMut<'_> {
+    type Target = SourceInfo;
+    fn deref(&self) -> &SourceInfo {
+        &self.info
+    }
+}
+
+impl std::ops::DerefMut for SourceInfoMut<'_> {
+    fn deref_mut(&mut self) -> &mut SourceInfo {
+        &mut self.info
+    }
+}
+
+impl Drop for SourceInfoMut<'_> {
+    fn drop(&mut self) {
+        self.table.set(self.node, std::mem::take(&mut self.info));
+    }
+}
+
+/// One line of a source file: its number and its byte ranges, with and without whitespace.
+/// Many positions share a line, so the table stores each line once.
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
+struct PackedLine {
+    line: u32,
+    containing_line: [u32; 2],
+    trimmed_line: [u32; 2],
+}
+
+/// A position: the index of its line, and its three column offsets.
+#[derive(Clone, Copy, Default)]
+struct PackedPosition {
+    line: u32,
+    column: [u32; 3],
+}
+
+#[derive(Clone, Copy, Default)]
+struct PackedSpan {
+    start: PackedPosition,
+    end: PackedPosition,
+}
+
+/// The source information of one node, in 48 bytes.
+#[derive(Clone, Copy, Default)]
+struct PackedInfo {
+    span: PackedSpan,
+    syntax_type: ControlledOption<Handle<InternedString>>,
+    containing_line: ControlledOption<Handle<InternedString>>,
+    fully_qualified_name: ControlledOption<Handle<InternedString>>,
+    /// 0 when the definiens span is the default span, else the index in `definiens` plus 1.
+    definiens: u32,
+}
+
+/// The bit of a slot that marks an entry of `wide`.
+const WIDE_SLOT: u32 = 1 << 31;
+
+/// Stores the source information of the nodes of a graph.
+///
+/// A `SourceInfo` takes 272 bytes, and most nodes have one. This table stores each one in
+/// 48 bytes: the values fit in `u32`, the lines are shared, and the definiens spans are rare.
+/// A value that does not fit goes in `wide`, as a `SourceInfo`.
+///
+/// A node with a handle below `slots.len()` and without an entry reads as a default
+/// `SourceInfo`. This keeps the behavior of the former dense arena: `get` returns `Some` for
+/// every handle up to the highest handle that has had a mutable access.
+pub(crate) struct SourceInfoTable {
+    /// For each node handle: 0 when the node has no entry, else the index in `entries` plus 1,
+    /// or the index in `wide` plus 1 with `WIDE_SLOT` set.
+    slots: Vec<u32>,
+    entries: Vec<PackedInfo>,
+    wide: Vec<SourceInfo>,
+    definiens: Vec<PackedSpan>,
+    /// The lines of the positions. Index 0 is the default line.
+    lines: Vec<PackedLine>,
+    line_indexes: FxHashMap<PackedLine, u32>,
+}
+
+impl SourceInfoTable {
+    fn new() -> SourceInfoTable {
+        let mut line_indexes = FxHashMap::default();
+        line_indexes.insert(PackedLine::default(), 0);
+        SourceInfoTable {
+            // Slot 0 stands for the missing node and is never used.
+            slots: vec![0],
+            entries: Vec::new(),
+            wide: Vec::new(),
+            definiens: Vec::new(),
+            lines: vec![PackedLine::default()],
+            line_indexes,
+        }
+    }
+
+    fn unpack_position(&self, position: &PackedPosition) -> lsp_positions::Position {
+        let line = &self.lines[position.line as usize];
+        lsp_positions::Position {
+            line: line.line as usize,
+            column: lsp_positions::Offset {
+                utf8_offset: position.column[0] as usize,
+                utf16_offset: position.column[1] as usize,
+                grapheme_offset: position.column[2] as usize,
+            },
+            containing_line: line.containing_line[0] as usize..line.containing_line[1] as usize,
+            trimmed_line: line.trimmed_line[0] as usize..line.trimmed_line[1] as usize,
+        }
+    }
+
+    fn unpack_span(&self, span: &PackedSpan) -> lsp_positions::Span {
+        lsp_positions::Span {
+            start: self.unpack_position(&span.start),
+            end: self.unpack_position(&span.end),
+        }
+    }
+
+    fn unpack(&self, packed: &PackedInfo) -> SourceInfo {
+        SourceInfo {
+            span: self.unpack_span(&packed.span),
+            syntax_type: packed.syntax_type,
+            containing_line: packed.containing_line,
+            definiens_span: match packed.definiens {
+                0 => lsp_positions::Span::default(),
+                index => self.unpack_span(&self.definiens[index as usize - 1]),
+            },
+            fully_qualified_name: packed.fully_qualified_name,
+        }
+    }
+
+    /// Returns the index of a line. Returns `None` when a value does not fit in `u32`.
+    fn pack_line(&mut self, position: &lsp_positions::Position) -> Option<u32> {
+        let line = PackedLine {
+            line: u32::try_from(position.line).ok()?,
+            containing_line: [
+                u32::try_from(position.containing_line.start).ok()?,
+                u32::try_from(position.containing_line.end).ok()?,
+            ],
+            trimmed_line: [
+                u32::try_from(position.trimmed_line.start).ok()?,
+                u32::try_from(position.trimmed_line.end).ok()?,
+            ],
+        };
+        if let Some(index) = self.line_indexes.get(&line) {
+            return Some(*index);
+        }
+        let index = u32::try_from(self.lines.len()).ok()?;
+        self.lines.push(line);
+        self.line_indexes.insert(line, index);
+        Some(index)
+    }
+
+    fn pack_position(&mut self, position: &lsp_positions::Position) -> Option<PackedPosition> {
+        Some(PackedPosition {
+            line: self.pack_line(position)?,
+            column: [
+                u32::try_from(position.column.utf8_offset).ok()?,
+                u32::try_from(position.column.utf16_offset).ok()?,
+                u32::try_from(position.column.grapheme_offset).ok()?,
+            ],
+        })
+    }
+
+    fn pack_span(&mut self, span: &lsp_positions::Span) -> Option<PackedSpan> {
+        Some(PackedSpan {
+            start: self.pack_position(&span.start)?,
+            end: self.pack_position(&span.end)?,
+        })
+    }
+
+    /// Packs a source information. Returns `None` when a value does not fit in `u32`. The
+    /// `definiens` argument is the index of the definiens span to reuse, or 0.
+    fn pack(&mut self, info: &SourceInfo, definiens: u32) -> Option<PackedInfo> {
+        let span = self.pack_span(&info.span)?;
+        let definiens_span = if info.definiens_span == lsp_positions::Span::default() {
+            None
+        } else {
+            Some(self.pack_span(&info.definiens_span)?)
+        };
+        let definiens = match definiens_span {
+            None => 0,
+            Some(span) if definiens != 0 => {
+                self.definiens[definiens as usize - 1] = span;
+                definiens
+            }
+            Some(span) => {
+                self.definiens.push(span);
+                u32::try_from(self.definiens.len()).ok()?
+            }
+        };
+        Some(PackedInfo {
+            span,
+            syntax_type: info.syntax_type,
+            containing_line: info.containing_line,
+            fully_qualified_name: info.fully_qualified_name,
+            definiens,
+        })
+    }
+
+    fn from_slot(&self, slot: u32) -> SourceInfo {
+        if slot == 0 {
+            SourceInfo::default()
+        } else if slot & WIDE_SLOT != 0 {
+            self.wide[(slot & !WIDE_SLOT) as usize - 1].clone()
+        } else {
+            self.unpack(&self.entries[slot as usize - 1])
+        }
+    }
+
+    #[inline]
+    fn get(&self, handle: Handle<Node>) -> Option<SourceInfo> {
+        let slot = *self.slots.get(handle.as_usize())?;
+        Some(self.from_slot(slot))
+    }
+
+    #[inline]
+    fn syntax_type(&self, handle: Handle<Node>) -> Option<Handle<InternedString>> {
+        let slot = *self.slots.get(handle.as_usize())?;
+        if slot == 0 {
+            None
+        } else if slot & WIDE_SLOT != 0 {
+            self.wide[(slot & !WIDE_SLOT) as usize - 1]
+                .syntax_type
+                .into_option()
+        } else {
+            self.entries[slot as usize - 1].syntax_type.into_option()
+        }
+    }
+
+    /// Returns the value of a node to change, and makes the node have a slot.
+    fn get_for_update(&mut self, handle: Handle<Node>) -> SourceInfo {
+        let index = handle.as_usize();
+        if self.slots.len() <= index {
+            self.slots.resize(index + 1, 0);
+        }
+        self.get(handle).unwrap_or_default()
+    }
+
+    fn set(&mut self, handle: Handle<Node>, info: SourceInfo) {
+        let index = handle.as_usize();
+        let slot = self.slots[index];
+        // The definiens span of the entry that the node has now, to reuse its place.
+        let reuse = if slot == 0 || slot & WIDE_SLOT != 0 {
+            0
+        } else {
+            self.entries[slot as usize - 1].definiens
+        };
+        match self.pack(&info, reuse) {
+            Some(packed) => {
+                if slot == 0 || slot & WIDE_SLOT != 0 {
+                    self.entries.push(packed);
+                    self.slots[index] = self.entries.len() as u32;
+                } else {
+                    self.entries[slot as usize - 1] = packed;
+                }
+            }
+            None => {
+                if slot & WIDE_SLOT != 0 {
+                    self.wide[(slot & !WIDE_SLOT) as usize - 1] = info;
+                } else {
+                    self.wide.push(info);
+                    self.slots[index] = self.wide.len() as u32 | WIDE_SLOT;
+                }
+            }
+        }
+    }
+
+    /// Returns the value of `get` for each handle from 0, as the former dense arena stored them.
+    pub(crate) fn to_dense(&self) -> Vec<SourceInfo> {
+        self.slots.iter().map(|&slot| self.from_slot(slot)).collect()
     }
 }
 
@@ -1484,7 +1775,7 @@ pub struct StackGraph {
     pub(crate) files: Arena<File>,
     file_handles: FxHashMap<&'static str, Handle<File>>,
     pub(crate) nodes: Arena<Node>,
-    pub(crate) source_info: SupplementalArena<Node, SourceInfo>,
+    pub(crate) source_info: SourceInfoTable,
     node_id_handles: NodeIDHandles,
     outgoing_edges: SupplementalArena<Node, SmallVec<[OutgoingEdge; 4]>>,
     incoming_edges: SupplementalArena<Node, Degree>,
@@ -1673,7 +1964,7 @@ impl Default for StackGraph {
             files: Arena::new(),
             file_handles: FxHashMap::default(),
             nodes,
-            source_info: SupplementalArena::new(),
+            source_info: SourceInfoTable::new(),
             node_id_handles: NodeIDHandles::new(),
             outgoing_edges: SupplementalArena::new(),
             incoming_edges: SupplementalArena::new(),

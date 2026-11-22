@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- `StackGraph` stores `SourceInfo` in a compact form: 48 bytes for each node, in place of 272. This cuts the memory of a large graph by about 0.7 GB for 3 million nodes. The values are the same. `StackGraph::source_info` returns `Option<SourceInfo>` by value, not `Option<&SourceInfo>`. `StackGraph::source_info_mut` returns a `SourceInfoMut` guard that dereferences to `SourceInfo` and stores the changes when it goes out of scope. A binding that changes fields needs `let mut`. `SourceInfo` now implements `Clone`. `sg_stack_graph_source_infos` builds its array on each call.
+- `StackGraph::syntax_type` reads the syntax type of a node without building a `SourceInfo`.
+
 ### Fixed
 
 - `StackGraph::add_from_graph` no longer panics when the other graph has several files and an edge joins nodes of two files, such as an edge from the root node.

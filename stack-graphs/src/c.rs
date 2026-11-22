@@ -39,6 +39,8 @@ use crate::CancellationFlag;
 /// Contains all of the nodes and edges that make up a stack graph.
 pub struct sg_stack_graph {
     pub inner: StackGraph,
+    /// The dense copy of the source information, built by `sg_stack_graph_source_infos`.
+    source_infos: std::cell::RefCell<Vec<crate::graph::SourceInfo>>,
 }
 
 /// Creates a new, initially empty stack graph.
@@ -46,6 +48,7 @@ pub struct sg_stack_graph {
 pub extern "C" fn sg_stack_graph_new() -> *mut sg_stack_graph {
     Box::into_raw(Box::new(sg_stack_graph {
         inner: StackGraph::new(),
+        source_infos: std::cell::RefCell::new(Vec::new()),
     }))
 }
 
@@ -705,13 +708,19 @@ pub struct sg_source_infos {
 }
 
 /// Returns a reference to the array of source information in this stack graph.  The resulting
-/// array pointer is only valid until the next call to any function that mutates the stack graph.
+/// array pointer is only valid until the next call to any function that mutates the stack graph,
+/// or to this function.
+///
+/// The stack graph stores source information for few nodes only.  This function builds the dense
+/// array on each call.
 #[no_mangle]
 pub extern "C" fn sg_stack_graph_source_infos(graph: *const sg_stack_graph) -> sg_source_infos {
-    let graph = unsafe { &(*graph).inner };
+    let graph = unsafe { &*graph };
+    let mut dense = graph.source_infos.borrow_mut();
+    *dense = graph.inner.source_info.to_dense();
     sg_source_infos {
-        infos: graph.source_info.as_ptr() as *const sg_source_info,
-        count: graph.source_info.len(),
+        infos: dense.as_ptr() as *const sg_source_info,
+        count: dense.len(),
     }
 }
 
@@ -736,7 +745,7 @@ pub extern "C" fn sg_stack_graph_add_source_infos(
     let infos = unsafe { std::slice::from_raw_parts(infos, count) };
     for i in 0..count {
         let node = unsafe { std::mem::transmute(infos[i].node) };
-        let info = graph.source_info_mut(node);
+        let mut info = graph.source_info_mut(node);
         *info = unsafe { std::mem::transmute(infos[i].source_info) };
     }
 }
