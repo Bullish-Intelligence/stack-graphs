@@ -182,11 +182,11 @@ def union_string(options: Options) -> "Options | None":
 union_string(Options()).min_width
 #                       ^ defined: 156
 
-def dotted_string() -> "Options":
+def single_name_string() -> "Options":
     return Options()
 
-dotted_string().min_width
-#               ^ defined: 156
+single_name_string().min_width
+#                    ^ defined: 156
 
 def dotted_union_string() -> "typing.Optional[Options]":
     return Options()

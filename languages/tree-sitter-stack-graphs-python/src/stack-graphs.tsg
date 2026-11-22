@@ -411,13 +411,14 @@ inherit .type_param_scope
 ;; annotation names a class. It does not work when the annotation names no class. These
 ;; annotations name no class:
 ;; - `Self`, `Any`, and `Type[...]` or `type[...]`,
-;; - a string that holds more than a plain name, like `-> "Foo | None"` or
-;;   `-> "typing.Optional[Foo]"`. The rules resolve a string that holds one plain name, as
-;;   `-> "Foo"`, `-> "mod.Foo"`, or `-> Optional["Foo"]`, like the bare name, so such a string
-;;   follows the annotation only, as a bare class name does. A store like `o.x = x` after
-;;   `o = self.copy()` has the name of the field on both sides. The stitcher keeps one more
-;;   similar path for the reference at such a store, so the annotation route survives. See
-;;   `add_path_shadow_aware`,
+;; - a string that holds more than a plain name, like `-> "Foo | None"`,
+;;   `-> "typing.Optional[Foo]"`, or the dotted name `-> "mod.Foo"`. The annotation rules
+;;   resolve a string that holds one plain name, as `-> "Foo"` or `-> Optional["Foo"]`, like the
+;;   bare name, so such a string follows the annotation only, as a bare class name does. They
+;;   have no rule for a dotted name in a string, so the gate keeps the body route for it. A
+;;   store like `o.x = x` after `o = self.copy()` has the name of the field on both sides. The
+;;   stitcher keeps one more similar path for the reference at such a store, so the annotation
+;;   route survives. See `add_path_shadow_aware`,
 ;; - a name that the file binds with `TypeVar(...)`, `ParamSpec(...)`, `TypeVarTuple(...)`, or
 ;;   `TypeAliasType(...)`,
 ;; - a type parameter of a `def` or a `class`: `def first[T](...) -> T`,
@@ -464,7 +465,7 @@ inherit .type_param_scope
     }
   }
   ; A pattern that matches a whole annotation when a word of the annotation names no class.
-  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"'][^\"']*[^\\w.\"'][^\"']*[\"']).*$" names)
+  let @mod.no_class_gate = (format "(?s)^.*(?:\\b(?:{})\\b|[\"'][^\"']*[^\\w\"'][^\"']*[\"']).*$" names)
 }
 
 ;;
