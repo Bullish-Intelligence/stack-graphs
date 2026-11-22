@@ -85,3 +85,45 @@ fn can_support_injected_nodes() {
         &["[test.py(1) scope] -0-> [test.py(0) exported scope]"],
     );
 }
+
+/// The stitcher keeps one more similar path for a path that starts at a node with the syntax
+/// type "store". This test covers the first step: the attribute `syntax_type` of a push symbol
+/// node in a TSG file reaches the source info of the node, as the exact text.
+#[test]
+fn a_push_symbol_node_takes_the_store_syntax_type_from_its_attribute() {
+    let tsg = r#"
+    (module) {
+      node store_ref
+      attr (store_ref) type = "push_symbol", symbol = "x", is_reference, syntax_type = "store"
+      node plain_ref
+      attr (plain_ref) type = "push_symbol", symbol = "y", is_reference
+    }
+    "#;
+    let python = "pass";
+    let file_name = "test.py";
+
+    let mut graph = StackGraph::new();
+    let file = graph.get_or_create_file(file_name);
+    let mut globals = Variables::new();
+    globals
+        .add(FILE_PATH_VAR.into(), file_name.into())
+        .expect("failed to add file path variable");
+
+    let language = StackGraphLanguage::from_str(tree_sitter_python::LANGUAGE.into(), tsg).unwrap();
+    language
+        .build_stack_graph_into(&mut graph, file, python, &globals, &NoCancellation)
+        .expect("Failed to build graph");
+
+    let syntax_type_of = |symbol: &str| -> Option<String> {
+        let node = graph
+            .nodes_for_file(file)
+            .find(|n| graph[*n].symbol().map_or(false, |s| &graph[s] == symbol))
+            .unwrap_or_else(|| panic!("no push symbol node for {}", symbol));
+        graph
+            .source_info(node)
+            .and_then(|si| si.syntax_type.into_option())
+            .map(|st| graph[st].to_string())
+    };
+    assert_eq!(syntax_type_of("x").as_deref(), Some("store"));
+    assert_eq!(syntax_type_of("y"), None);
+}

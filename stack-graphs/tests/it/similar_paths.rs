@@ -35,9 +35,25 @@ use crate::util::create_scope_node;
 /// Returns the symbols of the definitions that complete paths reach, after the removal of the
 /// paths that another path shadows.
 fn reached(config: StitcherConfig, left_first: bool, right_binds_x: bool) -> Vec<String> {
+    reached_with_syntax_type(config, left_first, right_binds_x, None).0
+}
+
+/// Like `reached`.  If `syntax_type` is set, the reference node has this syntax type.
+/// Also returns the number of paths from the reference to a definition that the stitcher kept,
+/// before the removal of the paths that another path shadows.
+fn reached_with_syntax_type(
+    config: StitcherConfig,
+    left_first: bool,
+    right_binds_x: bool,
+    syntax_type: Option<&str>,
+) -> (Vec<String>, usize) {
     let mut graph = StackGraph::new();
     let file = graph.add_file("if-else").unwrap();
     let reference = create_push_symbol_node(&mut graph, file, "x", true);
+    if let Some(syntax_type) = syntax_type {
+        let syntax_type = graph.add_string(syntax_type);
+        graph.source_info_mut(reference).syntax_type = syntax_type.into();
+    }
     let after = create_scope_node(&mut graph, file, false);
     let left = create_scope_node(&mut graph, file, false);
     let right = create_scope_node(&mut graph, file, false);
@@ -75,10 +91,12 @@ fn reached(config: StitcherConfig, left_first: bool, right_binds_x: bool) -> Vec
     .expect("should never be cancelled");
 
     let mut found = Vec::new();
+    let mut complete = 0;
     for (index, path) in paths.iter().enumerate() {
         if !path.starts_at_reference(&graph) || !path.ends_at_definition(&graph) {
             continue;
         }
+        complete += 1;
         let shadowed = paths
             .iter()
             .enumerate()
@@ -90,7 +108,7 @@ fn reached(config: StitcherConfig, left_first: bool, right_binds_x: bool) -> Vec
     }
     found.sort();
     found.dedup();
-    found
+    (found, complete)
 }
 
 #[test]
@@ -134,6 +152,38 @@ fn shadow_aware_detection_drops_the_earlier_binding_if_every_branch_binds() {
             "left_first = {}",
             left_first
         );
+    }
+}
+
+#[test]
+fn the_store_syntax_type_of_the_start_node_makes_the_stitcher_keep_one_more_path() {
+    // Every branch binds `x`, so both routes to `join` can be shadowed.  Shadow aware detection
+    // drops the second route.  The syntax type "store" on the reference node sets `keep_extra`,
+    // and the detector keeps the second route.  The stitcher reads the flag from the node of the
+    // start of the path, so this test covers the way from the attribute to the detector.
+    let config = StitcherConfig::default().with_shadow_aware_similar_paths(true);
+    for left_first in [true, false] {
+        let (plain, plain_paths) = reached_with_syntax_type(config, left_first, true, None);
+        let (store, store_paths) = reached_with_syntax_type(config, left_first, true, Some("store"));
+        assert!(
+            store_paths > plain_paths,
+            "left_first = {}: {} paths with the store type, {} without",
+            left_first,
+            store_paths,
+            plain_paths
+        );
+        // The extra path adds no result: both routes are shadowed in the end.
+        assert_eq!(plain, store, "left_first = {}", left_first);
+    }
+}
+
+#[test]
+fn a_syntax_type_other_than_store_keeps_no_extra_path() {
+    let config = StitcherConfig::default().with_shadow_aware_similar_paths(true);
+    for left_first in [true, false] {
+        let plain = reached_with_syntax_type(config, left_first, true, None);
+        let other = reached_with_syntax_type(config, left_first, true, Some("function"));
+        assert_eq!(plain, other, "left_first = {}", left_first);
     }
 }
 
