@@ -72,6 +72,21 @@ pub struct Stanza {
     /// Capture index of the full match in the file query
     pub full_match_file_capture_index: usize,
     pub range: Range,
+    /// The display text of each statement, for error messages. Execution fills it on first use,
+    /// so that a match does not format its statements again.
+    pub(crate) statement_texts: std::sync::OnceLock<Vec<std::sync::Arc<str>>>,
+}
+
+impl Stanza {
+    /// Returns the display text of each statement in `statements`.
+    pub(crate) fn statement_texts(&self) -> &[std::sync::Arc<str>] {
+        self.statement_texts.get_or_init(|| {
+            self.statements
+                .iter()
+                .map(|statement| std::sync::Arc::from(format!("{}", statement)))
+                .collect()
+        })
+    }
 }
 
 /// A statement that can appear in a graph DSL stanza

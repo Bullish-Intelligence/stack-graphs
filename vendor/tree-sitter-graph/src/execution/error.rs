@@ -83,26 +83,33 @@ pub enum Context {
 
 #[derive(Clone, Debug)]
 pub struct StatementContext {
-    pub statement: String,
+    pub statement: std::sync::Arc<str>,
     pub statement_location: Location,
     pub stanza_location: Location,
     pub source_location: Location,
-    pub node_kind: String,
+    pub node_kind: &'static str,
 }
 
 impl StatementContext {
-    pub(crate) fn new(stmt: &Statement, stanza: &Stanza, source_node: &tree_sitter::Node) -> Self {
+    /// `statement` is the display text of `stmt`. The stanza caches it, so that the text is not
+    /// formatted again for each match.
+    pub(crate) fn new(
+        stmt: &Statement,
+        statement: std::sync::Arc<str>,
+        stanza: &Stanza,
+        source_node: &tree_sitter::Node,
+    ) -> Self {
         Self {
-            statement: format!("{}", stmt),
+            statement,
             statement_location: stmt.location(),
             stanza_location: stanza.range.start,
             source_location: Location::from(source_node.range().start_point),
-            node_kind: source_node.kind().to_string(),
+            node_kind: source_node.kind(),
         }
     }
 
     pub(crate) fn update_statement(&mut self, stmt: &Statement) {
-        self.statement = format!("{}", stmt);
+        self.statement = std::sync::Arc::from(format!("{}", stmt));
         self.statement_location = stmt.location();
     }
 }

@@ -382,6 +382,7 @@ impl<'a> Parser<'a> {
             full_match_stanza_capture_index,
             full_match_file_capture_index: usize::MAX, // set in checker
             range,
+            statement_texts: std::sync::OnceLock::new(),
         })
     }
 

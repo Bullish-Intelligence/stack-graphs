@@ -96,12 +96,17 @@ impl LazyStore {
 /// Data structure to hold scoped variables with lazy keys and values
 pub(super) struct LazyScopedVariables {
     variables: HashMap<Identifier, Cell<ScopedValues>>,
+    /// For each inherited variable, the value that a syntax node that has no value of its own
+    /// gets from its ancestors. `None` means that no ancestor has a value. The values of a
+    /// variable do not change once it is forced, and `evaluate` forces it first.
+    inherited: RefCell<HashMap<Identifier, HashMap<SyntaxNodeID, Option<LazyValue>>>>,
 }
 
 impl LazyScopedVariables {
     pub(super) fn new() -> Self {
         LazyScopedVariables {
             variables: HashMap::new(),
+            inherited: RefCell::new(HashMap::new()),
         }
     }
 
@@ -158,17 +163,34 @@ impl LazyScopedVariables {
         if let Some(value) = map.get(&scope.index) {
             result = Some(value.clone());
         } else if exec.inherited_variables.contains(name) {
-            let mut parent = exec
-                .graph
-                .syntax_nodes
-                .get(&scope.index)
-                .and_then(|n| n.parent());
-            while let Some(scope) = parent {
-                if let Some(value) = map.get(&scope.id()) {
-                    result = Some(value.clone());
-                    break;
+            // Walk up from the node to the nearest ancestor with a value. Finding the parent of
+            // a node costs time in proportion to its depth, so remember the answer for each node
+            // on the way.
+            let mut inherited = self.inherited.borrow_mut();
+            let known = inherited.entry(name.clone()).or_default();
+            if let Some(answer) = known.get(&scope.index) {
+                result = answer.clone();
+            } else if let Some(node) = exec.graph.syntax_nodes.get(&scope.index) {
+                // The nodes on the way have no value of their own.
+                let mut visited = vec![scope.index];
+                let mut answer = None;
+                let mut parent = node.parent();
+                while let Some(ancestor) = parent {
+                    if let Some(value) = map.get(&ancestor.id()) {
+                        answer = Some(value.clone());
+                        break;
+                    }
+                    if let Some(known_answer) = known.get(&ancestor.id()) {
+                        answer = known_answer.clone();
+                        break;
+                    }
+                    visited.push(ancestor.id());
+                    parent = ancestor.parent();
                 }
-                parent = scope.parent();
+                for id in visited {
+                    known.insert(id, answer.clone());
+                }
+                result = answer;
             }
         }
 

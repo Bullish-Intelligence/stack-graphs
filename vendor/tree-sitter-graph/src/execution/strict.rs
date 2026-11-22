@@ -178,13 +178,13 @@ impl Stanza {
         cancellation_flag: &dyn CancellationFlag,
     ) -> Result<(), ExecutionError> {
         locals.clear();
-        for statement in &self.statements {
+        for (statement, text) in self.statements.iter().zip(self.statement_texts()) {
             let error_context = {
                 let node = mat
                     .nodes_for_capture_index(self.full_match_stanza_capture_index as u32)
                     .next()
                     .expect("missing full capture");
-                StatementContext::new(&statement, &self, &node)
+                StatementContext::new(statement, text.clone(), &self, &node)
             };
             let mut exec = ExecutionContext {
                 source,

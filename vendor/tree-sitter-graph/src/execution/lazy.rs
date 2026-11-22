@@ -195,8 +195,8 @@ impl ast::Stanza {
             .expect("missing capture for full match");
         debug!("match {:?} at {}", node, self.range.start);
         trace!("{{");
-        for statement in &self.statements {
-            let error_context = { StatementContext::new(&statement, &self, &node) };
+        for (statement, text) in self.statements.iter().zip(self.statement_texts()) {
+            let error_context = StatementContext::new(statement, text.clone(), &self, &node);
             let mut exec = ExecutionContext {
                 source,
                 graph,
@@ -399,7 +399,7 @@ impl ast::Scan {
             };
 
             for statement in &arm.statements {
-                arm_exec.error_context.statement = format!("{}", statement);
+                arm_exec.error_context.statement = std::sync::Arc::from(format!("{}", statement));
                 arm_exec.error_context.statement_location = statement.location();
                 statement
                     .execute_lazy(&mut arm_exec)
@@ -465,7 +465,7 @@ impl ast::If {
                     cancellation_flag: exec.cancellation_flag,
                 };
                 for stmt in &arm.statements {
-                    arm_exec.error_context.statement = format!("{}", stmt);
+                    arm_exec.error_context.statement = std::sync::Arc::from(format!("{}", stmt));
                     arm_exec.error_context.statement_location = stmt.location();
                     stmt.execute_lazy(&mut arm_exec)?;
                 }
@@ -515,7 +515,7 @@ impl ast::ForIn {
             self.variable
                 .add_lazy(&mut loop_exec, value.into(), false)?;
             for stmt in &self.statements {
-                loop_exec.error_context.statement = format!("{}", stmt);
+                loop_exec.error_context.statement = std::sync::Arc::from(format!("{}", stmt));
                 loop_exec.error_context.statement_location = stmt.location();
                 stmt.execute_lazy(&mut loop_exec)?;
             }
