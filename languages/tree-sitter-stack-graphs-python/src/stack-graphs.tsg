@@ -2065,6 +2065,13 @@ inherit .type_param_scope
   edge @cond.output -> @last.output
 }
 
+;; The value of `a or b` is the value of `a` or the value of `b`. `x or default` gives both.
+(boolean_operator left: (_) @left operator: "or" right: (_) @right) @op
+{
+  edge @op.output -> @left.output
+  edge @op.output -> @right.output
+}
+
 ;;;; Assignment expressions
 ;;
 ;; `name := value` binds `name` in the enclosing function, class, or module, as an assignment does.
@@ -3104,6 +3111,34 @@ inherit .type_param_scope
   edge @sub.annot -> reference
 }
 
+;; a string that holds a union of class names, like "Foo | None", "Optional[Foo]", or "Union[Foo, Bar]".
+;; Each name in the string is a use of the name. Only the whole string stands for the annotation,
+;; so these names are no references. The string has no dotted name and no container.
+(type
+  (string
+    (string_content) @content
+    (#match? @content "^\\s*(?:(?:Optional|Union)\\[\\s*)*\\w+(?:\\s*[|,]\\s*\\w+)*\\s*\\]*\\s*$")
+    (#not-match? @content "^\\s*\\w+\\s*$"))) @type
+{
+  scan (source-text @content) {
+    "([A-Za-z_][A-Za-z0-9_]*)"
+    {
+      if (not (or (eq $1 "None") (or (eq $1 "Optional") (eq $1 "Union")))) {
+        node reference
+        attr (reference) push_symbol = $1
+        edge reference -> @content.local_scope
+        attr (reference -> @content.local_scope) precedence = 2
+        edge reference -> @content.class_parent_scope
+        attr (reference -> @content.class_parent_scope) precedence = 1
+        edge reference -> @content.annotation_exit
+        attr (reference -> @content.annotation_exit) precedence = 3
+        edge reference -> @content.bottom
+        edge @type.annot -> reference
+      }
+    }
+  }
+}
+
 ;; a wrapper of a type, like Optional[Foo]: follow the first type argument
 (type
   (generic_type
@@ -3189,6 +3224,77 @@ inherit .type_param_scope
 (type (union_type (type) @member)) @type
 {
   edge @type.annot -> @member.annot
+}
+
+;;;; Union aliases
+;;
+;; A name that a module binds to a union is a union alias: `X = A | B`, `X = Union[A, B]`,
+;; `X = Optional[A]`, `X = Annotated[A | B, tag]`, `X: TypeAlias = A | B`, or `type X = A | B`.
+;; The value of the alias is the union, so an annotation that names the alias follows every member
+;; of the union, as the written union does. The alias can come from any file. A member that is an
+;; alias too follows its own members. The alias keeps the route of "Definitions that name no
+;; class": a return annotation that names the alias keeps the value following of the body.
+;;
+;; The route to the members pops the "()" symbol of the annotation and pushes it again. A plain
+;; reference to the alias has no "()" symbol, so it resolves to the alias only.
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (binary_operator operator: "|") @value)))
+{
+  node pop
+  node push
+  attr (pop) pop_scoped_symbol = "()"
+  attr (push) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.input -> pop
+  edge pop -> push
+  edge push -> @value.annot
+}
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (parenthesized_expression (binary_operator operator: "|") @value))))
+{
+  node pop
+  node push
+  attr (pop) pop_scoped_symbol = "()"
+  attr (push) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.input -> pop
+  edge pop -> push
+  edge push -> @value.annot
+}
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (subscript value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]) @value
+  (#match? @_head "^(Union|Optional|Annotated)$"))))
+{
+  node pop
+  node push
+  attr (pop) pop_scoped_symbol = "()"
+  attr (push) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.input -> pop
+  edge pop -> push
+  edge push -> @value.annot
+}
+
+(type_alias_statement
+  . (type [
+    (identifier) @name
+    (generic_type . (identifier) @name)
+  ])
+  . (type) @value)
+{
+  node pop
+  node push
+  attr (pop) pop_scoped_symbol = "()"
+  attr (push) push_scoped_symbol = "()", scope = @name.literal_scope
+  edge @name.def -> pop
+  edge pop -> push
+  edge push -> @value.annot
 }
 
 ;;;; Element types of containers
