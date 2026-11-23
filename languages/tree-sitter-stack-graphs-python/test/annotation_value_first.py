@@ -42,12 +42,13 @@ class Holder:
     class_var: Base = Derived()
 
     def __init__(self):
-        # An attribute keeps the annotation first.
+        # An attribute keeps the annotation only. The value route stays only when the annotation
+        # names no class (see annotated_store_conditional.py).
         self.attr: Base = Derived()
 
     def read(self):
         self.attr.m
-        #         ^ defined: 6, 10
+        #         ^ defined: 6
 
 Holder.class_var.m
 #                ^ defined: 6, 10

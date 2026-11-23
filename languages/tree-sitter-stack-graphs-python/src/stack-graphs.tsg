@@ -3597,6 +3597,13 @@ inherit .type_param_scope
   attr (instance) push_scoped_symbol = "()", scope = @pattern.literal_scope
   edge @pattern.input -> instance
   edge instance -> @type.annot
+  ; An annotated attribute store, `self.x: Foo = value`, keeps the annotation route only: the
+  ; declared type is the type of the attribute for every reader. The value route has a lower
+  ; precedence, so it stays only when the annotation reaches no class. Without this, a value
+  ; such as `a if c else b` adds one candidate for each branch to the annotation candidate.
+  if (eq (node-type @pattern) "attribute") {
+    attr (@pattern.input -> instance) precedence = 1
+  }
 }
 
 ;; In a function body, `x: Foo = value` narrows the variable to the value at a read after the
