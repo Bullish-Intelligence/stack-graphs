@@ -1391,7 +1391,7 @@ inherit .type_param_scope
             (function_definition
                 name: (identifier) @method_name
                 parameters: 
-                    (parameters . (identifier) @first_param)
+                    (parameters . (comment)* . (identifier) @first_param)
                 body: (block)
             )
          )
@@ -1420,12 +1420,12 @@ inherit .type_param_scope
 (class_definition
     body: (block [
         (function_definition
-            parameters: (parameters . (identifier) @first_param)
+            parameters: (parameters . (comment)* . (identifier) @first_param)
             body: (block) @method_body)
         (decorated_definition
             (decorator (_) @decorator) .
             definition: (function_definition
-                parameters: (parameters . (identifier) @first_param)
+                parameters: (parameters . (comment)* . (identifier) @first_param)
                 body: (block) @method_body))
     ])
 )
@@ -1482,7 +1482,7 @@ inherit .type_param_scope
                 (decorator (_) @decorator) .
                 definition: (function_definition
                     parameters:
-                        (parameters . (identifier) @first_param)
+                        (parameters . (comment)* . (identifier) @first_param)
                     body: (block)
                 )
             )
@@ -1726,30 +1726,21 @@ inherit .type_param_scope
   edge @class.super_call_scope -> @superclass.output
 }
 
-; A call of `super()` follows a generic base class, `class B(A[T])`, as the keyword paths do. The
-; base `A[T]` is the class `A`. A lookup of a member does not follow it: the work of the lookups
-; would grow. The call of `super()` is rare, so its scope can afford it.
+; A generic base class, `class B(A[T])`, is the class `A`. A subscript has no output of its own, so
+; the lookups of a member and the call of `super()` follow the value of the subscript.
 (class_definition
   superclasses: (argument_list
     (subscript value: (_) @value))) @class
 {
+  edge @class.super_scope -> @value.output
   edge @class.super_call_scope -> @value.output
 }
 
 ; The keyword paths and the model questions reach the base classes through the keyword super
-; scope. It leads to the super scope. A generic base class, `class B(A[T])`, is the class `A`, but
-; only for these paths. A lookup of a member does not follow it: the work of the lookups would grow.
+; scope. It leads to the super scope, which holds the generic base classes too.
 (class_definition) @class
 {
   edge @class.kw_super_scope -> @class.super_scope
-}
-
-(class_definition
-  superclasses: (argument_list
-    (subscript
-      value: (_) @value))) @class
-{
-  edge @class.kw_super_scope -> @value.output
 }
 
 ;;;; Synthesized `__init__`
