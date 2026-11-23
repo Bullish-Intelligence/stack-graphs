@@ -1961,7 +1961,13 @@ inherit .type_param_scope
   edge @lam.output -> @lam.call
 }
 
-(conditional_expression) {}
+; The value of `a if c else b` is the value of `a` or the value of `b`. The condition gives no
+; value. A variable that holds the result gets the type of both branches.
+(conditional_expression . (_) @first (_) . (_) @last .) @cond
+{
+  edge @cond.output -> @first.output
+  edge @cond.output -> @last.output
+}
 
 ;;;; Assignment expressions
 ;;
@@ -2508,6 +2514,11 @@ inherit .type_param_scope
   ; definition only.
   if (or (eq (node-type @pattern) "attribute") (eq (node-type @pattern) "subscript")) {
     let @pattern.local_scope = @pattern.binding_scope
+  } elif (eq (node-type @pattern) "case_pattern") {
+    ; A pattern of a `case` clause binds its captures at the statement. A class name inside it,
+    ; as in `case [Point(x=0)]` or `case (Point() | Line())`, is a read. It must reach the scope of
+    ; the statement, so it uses the scope of the statement itself.
+    let @pattern.local_scope = statement_scope
   } else {
     node @pattern.local_scope
     edge statement_scope -> @pattern.local_scope
