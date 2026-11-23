@@ -249,6 +249,8 @@ inherit .function_returns
 inherit .global
 inherit .hoist_scope
 inherit .scope_boundary
+inherit .outside_boundary
+inherit .annotation_exit
 inherit .global_dot
 inherit .relative_entry
 inherit .binding_scope
@@ -391,6 +393,8 @@ inherit .type_param_scope
   ;; add a dummy nodes for inherited variables
   node @mod.hoist_scope
   node @mod.scope_boundary
+  node @mod.outside_boundary
+  node @mod.annotation_exit
   node @mod.class_member_attr_scope
   node @mod.class_parent_scope
   node @mod.class_self_scope
@@ -968,6 +972,21 @@ inherit .type_param_scope
 ;; annotations, the default values, and the decorators of a function attach to the enclosing
 ;; scope (`local_scope` of the definition), and so they stay outside the boundary.
 
+;;;; Variable annotations
+;;
+;; Python never evaluates the annotation of a local variable, and a type checker reads it at its
+;; place in the flow. So the annotation of a variable in a function does not see the hoisted locals
+;; of the function: `x: Foo = value` names the `Foo` around the function, also when the function
+;; imports another `Foo` later. The boundary of a function has a second node, the outside route,
+;; with the exit edges only. A name in the annotation takes that route first, at a precedence above
+;; the flow. The route has no hoist, so a name that the function binds finds the flow after it.
+;; (The flow edge shadows the route only when the route finds nothing.)
+
+(assignment type: (type) @type)
+{
+  let @type.annotation_exit = @type.outside_boundary
+}
+
 ;;;; Hoisting
 ;;
 ;; A name that a function binds anywhere is local to the whole function. The hoist scope of the
@@ -1222,6 +1241,14 @@ inherit .type_param_scope
   ; A function in a class does not see the class body: its boundary leads to the exit scope.
   node no_class_boundary
   let @body.class_parent_scope = no_class_boundary
+  ; The outside route of the function. It is the boundary without the hoisted locals. A variable
+  ; annotation in the body takes it (see "Variable annotations").
+  node outside
+  edge outside -> drop_scope
+  attr (outside -> drop_scope) precedence = @func.bottom_precedence
+  edge outside -> @func.exit_scope
+  attr (outside -> @func.exit_scope) precedence = @func.local_precedence
+  let @body.outside_boundary = outside
   attr (@func.call) pop_scoped_symbol = "()"
   edge @params.before_scope -> JUMP_TO_SCOPE_NODE
   attr (return_value) is_exported
@@ -1676,6 +1703,8 @@ inherit .type_param_scope
   edge boundary -> @class.exit_scope
   let @body.scope_boundary = boundary
   let @body.class_parent_scope = boundary
+  node no_outside
+  let @body.outside_boundary = no_outside
 }
 
 (class_definition
@@ -2040,7 +2069,10 @@ inherit .type_param_scope
   attr (@name.output -> @name.declared_names) precedence = 3
   ; A type parameter wins over every binding of the same name outside its definition.
   edge @name.output -> @name.type_param_scope
-  attr (@name.output -> @name.type_param_scope) precedence = 3
+  attr (@name.output -> @name.type_param_scope) precedence = 4
+  ; A variable annotation in a function skips the hoisted locals. See "Variable annotations".
+  edge @name.output -> @name.annotation_exit
+  attr (@name.output -> @name.annotation_exit) precedence = 3
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
   ; The name of a type parameter or of a type alias at its declaration is a definition, no reference.
@@ -2643,7 +2675,7 @@ inherit .type_param_scope
   edge @first.output -> @first.declared_names
   attr (@first.output -> @first.declared_names) precedence = 3
   edge @first.output -> @first.type_param_scope
-  attr (@first.output -> @first.type_param_scope) precedence = 3
+  attr (@first.output -> @first.type_param_scope) precedence = 4
   attr (@first.output) push_symbol = (source-text @first), source_node = @first, is_reference
 }
 
@@ -2961,6 +2993,8 @@ inherit .type_param_scope
   attr (reference -> @content.local_scope) precedence = 2
   edge reference -> @content.class_parent_scope
   attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.annotation_exit
+  attr (reference -> @content.annotation_exit) precedence = 3
   edge reference -> @content.bottom
   edge @type.annot -> reference
 }
@@ -2983,6 +3017,8 @@ inherit .type_param_scope
   attr (reference -> @content.local_scope) precedence = 2
   edge reference -> @content.class_parent_scope
   attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.annotation_exit
+  attr (reference -> @content.annotation_exit) precedence = 3
   edge reference -> @content.bottom
   edge @sub.annot -> reference
 }
@@ -3004,6 +3040,8 @@ inherit .type_param_scope
   attr (reference -> @content.local_scope) precedence = 2
   edge reference -> @content.class_parent_scope
   attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.annotation_exit
+  attr (reference -> @content.annotation_exit) precedence = 3
   edge reference -> @content.bottom
   edge @sub.annot -> reference
 }
@@ -3041,7 +3079,9 @@ inherit .type_param_scope
   attr (@head.output -> @head.class_parent_scope) precedence = 1
   edge @head.output -> @head.bottom
   edge @head.output -> @head.type_param_scope
-  attr (@head.output -> @head.type_param_scope) precedence = 3
+  attr (@head.output -> @head.type_param_scope) precedence = 4
+  edge @head.output -> @head.annotation_exit
+  attr (@head.output -> @head.annotation_exit) precedence = 3
   edge @type.annot -> @head.output
 }
 
