@@ -1794,6 +1794,102 @@ inherit .type_param_scope
   attr (@class.cls_keyword_pop -> @class.init_fields) precedence = 1
 }
 
+;;;; Positions of a `NamedTuple` class
+;;
+;; An instance of a `NamedTuple` class is a tuple. A tuple pattern asks for a position, like the
+;; `a, b` in `a, b = value` and in `for a, b in values`. The pattern pushes the index of the
+;; target. The class answers with the type of the field at that index. The fields are the
+;; annotated names of the class body, in the order of the body.
+;;
+;; A statement of the body cannot tell its own field number, so the rules count along the body.
+;; A chain links each statement of the body to the next one. A statement that is no field passes
+;; the path on. A field takes the path when the index is 0. Otherwise it lowers the index by one
+;; and passes the path on. The table lowers the indexes 1 to 8, so the classes read the first 9
+;; fields. The chain exists for a class with the base `NamedTuple` only.
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block . (_) @first)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])")) @class
+{
+  node drop
+  attr (drop) type = "drop_scopes"
+  edge @class.cls_call -> drop
+  edge drop -> @first.nt_in
+}
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (_) @stmt)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  node @stmt.nt_in
+  node @stmt.nt_out
+}
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (_) @prev . (_) @next)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  edge @prev.nt_out -> @next.nt_in
+}
+
+;; a statement that is no field
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (_) @stmt)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  if (not (eq (node-type @stmt) "expression_statement")) {
+    edge @stmt.nt_in -> @stmt.nt_out
+  }
+}
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (expression_statement (_) @value) @stmt)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  if (not (eq (node-type @value) "assignment")) {
+    edge @stmt.nt_in -> @stmt.nt_out
+  }
+}
+
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (expression_statement (assignment !type)) @stmt)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  edge @stmt.nt_in -> @stmt.nt_out
+}
+
+;; a field
+(class_definition
+  superclasses: (argument_list) @_bases
+  body: (block (expression_statement
+    (assignment left: (identifier) type: (type) @type)) @stmt)
+  (#match? @_bases "(^|[(,.\\s])NamedTuple\\s*($|[,)])"))
+{
+  node take
+  node instance
+  attr (take) pop_symbol = 0
+  attr (instance) push_scoped_symbol = "()", scope = @type.literal_scope
+  edge @stmt.nt_in -> take
+  edge take -> instance
+  edge instance -> @type.annot
+
+  for lower in [0, 1, 2, 3, 4, 5, 6, 7] {
+    node pop
+    node push
+    attr (pop) pop_symbol = (plus lower 1)
+    attr (push) push_symbol = lower
+    edge @stmt.nt_in -> pop
+    edge pop -> push
+    edge push -> @stmt.nt_out
+  }
+}
+
 ;;;; Model classes and TypedDict
 ;;
 ;; A class with a base that `dataclass_transform` marks gets a synthesized `__init__` as well. The
