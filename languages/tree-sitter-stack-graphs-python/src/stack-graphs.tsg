@@ -245,7 +245,6 @@ inherit .class_self_scope
 inherit .class_super_scope
 inherit .declared_names
 inherit .enclosing_scope
-inherit .final_scope
 inherit .function_returns
 inherit .global
 inherit .hoist_scope
@@ -403,7 +402,6 @@ inherit .type_param_scope
   node @mod.type_param_scope
   let @mod.declaration = #false
   node @mod.enclosing_scope
-  node @mod.final_scope
 
   ;; the scope that a literal pushes with the "()" symbol of its class
   node @mod.literal_scope
@@ -813,10 +811,10 @@ inherit .type_param_scope
 
 (function_definition (block) @block) @func
 {
-  edge @block.scope_boundary -> @block.local_scope
+  edge @block.scope_boundary -> @func.exit_scope
   ; A function inside another function sees the bindings of the enclosing function before the final
   ; bindings of the module. A top-level function sees the final bindings of the module first.
-  attr (@block.scope_boundary -> @block.local_scope) precedence = @func.local_precedence
+  attr (@block.scope_boundary -> @func.exit_scope) precedence = @func.local_precedence
 }
 
 [
@@ -1109,6 +1107,49 @@ inherit .type_param_scope
   edge @stmt.hoist_scope -> hoist_def
 }
 
+;;;; Scope exits
+;;
+;; Each construct that introduces a scope has an exit scope: the scope that its boundary leads to.
+;; This is the flow of the enclosing scope at the definition (`local_scope`). A function or a class
+;; directly in a class body does not see the names of that class body, as Python skips the class
+;; when it resolves a name. Its exit scope is the exit scope of the class. A decorator, a default
+;; value, and an annotation still read the class body, as they run in it.
+;;
+;; A lambda or a comprehension in a class body still reads the class body. Python does not allow
+;; this, but code that works does not depend on it.
+
+[
+  (lambda) @n
+  (list_comprehension) @n
+  (set_comprehension) @n
+  (dictionary_comprehension) @n
+  (generator_expression) @n
+  (module [
+    (function_definition) @n
+    (class_definition) @n
+    (decorated_definition [(function_definition) (class_definition)] @n)
+  ])
+  ((_ (block [
+    (function_definition) @n
+    (class_definition) @n
+    (decorated_definition [(function_definition) (class_definition)] @n)
+  ])) @_owner
+  (#not-match? @_owner "^class[^A-Za-z0-9_]"))
+]
+{
+  let @n.exit_scope = @n.local_scope
+}
+
+(class_definition
+  body: (block [
+    (function_definition) @n
+    (class_definition) @n
+    (decorated_definition [(function_definition) (class_definition)] @n)
+  ])) @class
+{
+  let @n.exit_scope = @class.exit_scope
+}
+
 ;;;; Compound Statements
 
 (if_statement) {}
@@ -1174,15 +1215,13 @@ inherit .type_param_scope
   attr (drop_scope) type = "drop_scopes"
   ; The names that a `global` or `nonlocal` statement in the body declares.
   node @body.declared_names
-  ; The scope that `nonlocal` reaches. It holds the bindings of the enclosing function before the
-  ; definition, and the final bindings of that function, as the inner function can run after
-  ; the enclosing function binds a name later. The bindings before the definition win.
-  node enclosing_scope
-  edge enclosing_scope -> @func.local_scope
-  attr (enclosing_scope -> @func.local_scope) precedence = 1
-  edge enclosing_scope -> @func.final_scope
-  let @body.enclosing_scope = enclosing_scope
-  let @body.final_scope = @body.after_scope
+  ; The scope that `nonlocal` reaches is the exit scope of the function. The bindings before the
+  ; definition win. The flow of the enclosing function ends at its boundary, which holds the
+  ; names that the enclosing function binds later, as the inner function can run after them.
+  let @body.enclosing_scope = @func.exit_scope
+  ; A function in a class does not see the class body: its boundary leads to the exit scope.
+  node no_class_boundary
+  let @body.class_parent_scope = no_class_boundary
   attr (@func.call) pop_scoped_symbol = "()"
   edge @params.before_scope -> JUMP_TO_SCOPE_NODE
   attr (return_value) is_exported
@@ -1207,12 +1246,16 @@ inherit .type_param_scope
   node @body.after_scope
 
   edge @lam.call -> return_value
-  ; The body sees the final bindings of the module, as the body of a function does, and the
-  ; bindings of the enclosing function. A parameter of the lambda shadows both.
+  ; The node after the body is the boundary of the lambda. A lambda binds only its parameters and
+  ; the names of its assignment expressions. They come from the flow of the body, so the lambda
+  ; hoists nothing. The boundary leads to the final bindings of the module, as the boundary of a
+  ; function does, and to the scope around the lambda. A class body is not part of that scope. A
+  ; parameter of the lambda shadows both.
+  let @body.scope_boundary = @body.after_scope
   edge @body.after_scope -> @lam.bottom
   attr (@body.after_scope -> @lam.bottom) precedence = @lam.bottom_precedence
-  edge @body.after_scope -> @lam.local_scope
-  attr (@body.after_scope -> @lam.local_scope) precedence = @lam.local_precedence
+  edge @body.after_scope -> @lam.exit_scope
+  attr (@body.after_scope -> @lam.exit_scope) precedence = @lam.local_precedence
   attr (@lam.call) pop_scoped_symbol = "()"
   attr (return_value) is_exported
   let @lam.function_returns = return_value
@@ -1620,11 +1663,19 @@ inherit .type_param_scope
   body: (_) @body) @class
 {
   let @body.class_member_attr_scope = @class.member_store
-  node @body.class_parent_scope
-  edge @body.class_parent_scope -> @class.class_parent_scope
-  edge @body.class_parent_scope -> @class.local_scope
   let @body.class_self_scope = @class.call_drop
   let @body.class_super_scope = @class.super_call_scope
+
+  ; The boundary of the class body. A class body binds names by flow only. It hoists nothing, as a
+  ; read of a name that the class binds later finds the name of the enclosing scope. The boundary
+  ; leads to the enclosing scope at the definition of the class. It skips the body of an enclosing
+  ; class, which a nested scope cannot see. A read in the class body reaches the boundary after the
+  ; flow of the body (`class_parent_scope`). The flow does not end at the boundary, as the flow is
+  ; the namespace of the members too: a lookup of a member must not leave the class.
+  node boundary
+  edge boundary -> @class.exit_scope
+  let @body.scope_boundary = boundary
+  let @body.class_parent_scope = boundary
 }
 
 (class_definition
@@ -1977,17 +2028,19 @@ inherit .type_param_scope
 (primary_expression/identifier) @name
 {
   edge @name.output -> @name.local_scope
-  edge @name.output -> @name.class_parent_scope
-  ; A name in the local scope shadows a name in the scope around the class. That scope shadows the
-  ; final bindings of the module, which an annotation can reach as a forward reference.
+  ; A name in the local scope shadows a name in the scope around the class. That scope is the
+  ; boundary of the class body. It shadows the final bindings of the module, which an annotation
+  ; can reach as a forward reference. The flow of a class body is also the namespace of its
+  ; members, so the boundary of a class body hangs off the read and not off the end of the flow.
   attr (@name.output -> @name.local_scope) precedence = 2
+  edge @name.output -> @name.class_parent_scope
   attr (@name.output -> @name.class_parent_scope) precedence = 1
   ; A name that `global` or `nonlocal` declares wins over every other binding.
   edge @name.output -> @name.declared_names
   attr (@name.output -> @name.declared_names) precedence = 3
   ; A type parameter wins over every binding of the same name outside its definition.
   edge @name.output -> @name.type_param_scope
-  attr (@name.output -> @name.type_param_scope) precedence = 4
+  attr (@name.output -> @name.type_param_scope) precedence = 3
   edge @name.local_scope -> @name.input
   attr (@name.input) pop_node = @name
   ; The name of a type parameter or of a type alias at its declaration is a definition, no reference.
@@ -2299,7 +2352,13 @@ inherit .type_param_scope
 ;;
 ;; A comprehension has a scope of its own. The variables of its `for` clauses belong to that scope.
 ;; They do not leak into the enclosing scope, and they shadow a variable of the same name outside.
-;; The expressions of the comprehension look up names in the comprehension scope first.
+;; The expressions of the comprehension look up names in the comprehension scope first. The
+;; comprehension scope is its own boundary. It leads to the scope around the comprehension, except
+;; that a class body is not part of that scope.
+;;
+;; The first iterable runs in the enclosing scope, before the comprehension scope exists. So the
+;; first iterable reads the names around the comprehension, also a name that a target rebinds, as
+;; in `[x for x in x]`. A later iterable and the condition read the comprehension scope.
 
 [
   (list_comprehension)
@@ -2309,7 +2368,7 @@ inherit .type_param_scope
 ] @comp
 {
   node @comp.comprehension_scope
-  edge @comp.comprehension_scope -> @comp.local_scope
+  edge @comp.comprehension_scope -> @comp.exit_scope
 }
 
 [
@@ -2320,6 +2379,16 @@ inherit .type_param_scope
 ] @comp
 {
   let @child.local_scope = @comp.comprehension_scope
+}
+
+[
+  (list_comprehension body: (_) . (for_in_clause right: (_) @first))
+  (set_comprehension body: (_) . (for_in_clause right: (_) @first))
+  (dictionary_comprehension body: (_) . (for_in_clause right: (_) @first))
+  (generator_expression body: (_) . (for_in_clause right: (_) @first))
+] @comp
+{
+  let @first.local_scope = @comp.local_scope
 }
 
 (list_comprehension) {}
@@ -2574,7 +2643,7 @@ inherit .type_param_scope
   edge @first.output -> @first.declared_names
   attr (@first.output -> @first.declared_names) precedence = 3
   edge @first.output -> @first.type_param_scope
-  attr (@first.output -> @first.type_param_scope) precedence = 4
+  attr (@first.output -> @first.type_param_scope) precedence = 3
   attr (@first.output) push_symbol = (source-text @first), source_node = @first, is_reference
 }
 
@@ -2972,7 +3041,7 @@ inherit .type_param_scope
   attr (@head.output -> @head.class_parent_scope) precedence = 1
   edge @head.output -> @head.bottom
   edge @head.output -> @head.type_param_scope
-  attr (@head.output -> @head.type_param_scope) precedence = 4
+  attr (@head.output -> @head.type_param_scope) precedence = 3
   edge @type.annot -> @head.output
 }
 
