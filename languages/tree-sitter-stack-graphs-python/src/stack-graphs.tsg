@@ -249,6 +249,7 @@ inherit .final_scope
 inherit .function_returns
 inherit .global
 inherit .hoist_scope
+inherit .scope_boundary
 inherit .global_dot
 inherit .relative_entry
 inherit .binding_scope
@@ -390,6 +391,7 @@ inherit .type_param_scope
 
   ;; add a dummy nodes for inherited variables
   node @mod.hoist_scope
+  node @mod.scope_boundary
   node @mod.class_member_attr_scope
   node @mod.class_parent_scope
   node @mod.class_self_scope
@@ -811,10 +813,10 @@ inherit .type_param_scope
 
 (function_definition (block) @block) @func
 {
-  edge @block.before_scope -> @block.local_scope
+  edge @block.scope_boundary -> @block.local_scope
   ; A function inside another function sees the bindings of the enclosing function before the final
   ; bindings of the module. A top-level function sees the final bindings of the module first.
-  attr (@block.before_scope -> @block.local_scope) precedence = @func.local_precedence
+  attr (@block.scope_boundary -> @block.local_scope) precedence = @func.local_precedence
 }
 
 [
@@ -945,10 +947,34 @@ inherit .type_param_scope
 
 (exec_statement) {}
 
+;;;; Scope boundaries
+;;
+;; Python scoping has two steps. The scope that owns a name is static. The binding of the name
+;; inside that scope comes from the flow of the statements.
+;;
+;; Each scope that a construct introduces has one boundary node. The inherited variable
+;; `.scope_boundary` holds the boundary of the nearest such construct. A function body defines it
+;; in the function rule. The module has a dummy node.
+;;
+;; Inside the construct, flow chains (`before_scope` and `after_scope`) find the bindings. The
+;; first node of the chain has an edge to the boundary with the default precedence (0). A binding
+;; that the flow reaches, such as a parameter, wins over any path through the boundary.
+;;
+;; At the boundary, the edges leave in this order of precedence:
+;;   1. The hoisted locals of the scope (see "Hoisting"), at precedence 2.
+;;   2. A name that `global` or `nonlocal` declares, to its declared scope.
+;;   3. The exit to the enclosing scope, at `local_precedence` or `bottom_precedence` (at most 1).
+;; A local name never reaches the enclosing scope, as its hoisted binding wins.
+;;
+;; A reference outside the boundary never sees the hoisted locals of the scope. The signature
+;; annotations, the default values, and the decorators of a function attach to the enclosing
+;; scope (`local_scope` of the definition), and so they stay outside the boundary.
+
 ;;;; Hoisting
 ;;
 ;; A name that a function binds anywhere is local to the whole function. The hoist scope of the
-;; function (see the function rule) has an edge to each binding: an assignment, an augmented
+;; function (see the function rule) hangs from the boundary of the function. It has an edge to
+;; each binding: an assignment, an augmented
 ;; assignment, a `for` target, a `with` or `except` target, an assignment expression, a capture
 ;; pattern, an import, a function, a class, and a type alias. Each of these rules adds the edge.
 ;;
@@ -1125,15 +1151,21 @@ inherit .type_param_scope
   ; top-level function, they shadow the bindings that precede the function and the builtins.
   ; This way a module-level definition after the function shadows a builtin of the same name.
   ; A function inside another function keeps both, as a name of the enclosing function must win.
-  edge @body.before_scope -> drop_scope
-  attr (@body.before_scope -> drop_scope) precedence = @func.bottom_precedence
+  ; The flow of the body ends at the boundary of the function. A parameter has a higher
+  ; precedence than this edge, so the flow finds it first.
+  node boundary
+  edge @body.before_scope -> boundary
+  let @body.scope_boundary = boundary
+  ; The names around the function, and the final bindings of the module, hang from the boundary.
+  edge boundary -> drop_scope
+  attr (boundary -> drop_scope) precedence = @func.bottom_precedence
   ; A name that the body binds anywhere is local to the whole body, as in Python. The hoist scope
-  ; has an edge to each binding of the body, and it shadows the names around the function. A read
+  ; has an edge to each binding of the body. It shadows the names around the function. A read
   ; that no binding reaches along the flow of the body then still finds a local, and not a name of
   ; the module. A name that `global` or `nonlocal` declares wins over it. See `declared_names`.
   node hoist
-  edge @body.before_scope -> hoist
-  attr (@body.before_scope -> hoist) precedence = 2
+  edge boundary -> hoist
+  attr (boundary -> hoist) precedence = 2
   let @body.hoist_scope = hoist
   let @body.bottom_precedence = 0
   ; In a function, the enclosing bindings win over the final bindings of the module.
