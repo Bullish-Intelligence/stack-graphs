@@ -2088,7 +2088,14 @@ inherit .type_param_scope
 
 (as_pattern) {}
 
-(await) {}
+;; `await f()` gives the value that the call returns. For an `async def` with a return annotation,
+;; the annotation names the awaited type, so the annotation route of the call applies to the value
+;; of the `await`. The rules do not model the coroutine: a call without `await` gives the same
+;; value.
+(await (_) @awaited) @await
+{
+  edge @await.output -> @awaited.output
+}
 
 (yield) {}
 
