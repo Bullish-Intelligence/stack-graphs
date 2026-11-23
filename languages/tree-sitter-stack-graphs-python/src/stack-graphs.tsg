@@ -240,7 +240,6 @@ inherit .bottom
 inherit .bottom_precedence
 inherit .local_precedence
 inherit .class_member_attr_scope
-inherit .method_ann_scope
 inherit .class_parent_scope
 inherit .class_self_scope
 inherit .class_super_scope
@@ -392,7 +391,6 @@ inherit .type_param_scope
   ;; add a dummy nodes for inherited variables
   node @mod.hoist_scope
   node @mod.class_member_attr_scope
-  node @mod.method_ann_scope
   node @mod.class_parent_scope
   node @mod.class_self_scope
   node @mod.class_super_scope
@@ -1328,7 +1326,7 @@ inherit .type_param_scope
                 parameters: (parameters . (identifier) @first_param)
                 body: (block) @method_body))
     ])
-) @class
+)
 {
   let stores = (replace (source-text @method_body) (format "(?m)\\b{}\\s*\\.\\s*\\w+(?:[^\\n=(\\\\]|\\\\\\n)*=(?:[^=]|$)|^[ \\t]*{}[ \\t]*\\.[ \\t]*\\w+[ \\t]*:|\\b(?:for|as)\\s+(?:[(\\[*\\s]*[\\w.]+[)\\]\\s]*,\\s*)*[(\\[*\\s]*{}\\s*\\." (source-text @first_param) (source-text @first_param) (source-text @first_param)) "")
   if (not (eq stores (source-text @method_body))) {
@@ -1337,13 +1335,11 @@ inherit .type_param_scope
         edge @first_param.class_member_attr_scope -> @first_param.output
         edge @first_param.output -> @method_body.after_scope
         attr (@first_param.output) push_node = @first_param
-        let @method_body.method_ann_scope = @class.annotated
       }
     } else {
       edge @first_param.class_member_attr_scope -> @first_param.output
       edge @first_param.output -> @method_body.after_scope
       attr (@first_param.output) push_node = @first_param
-      let @method_body.method_ann_scope = @class.annotated
     }
   }
 }
@@ -1468,7 +1464,6 @@ inherit .type_param_scope
   node @class.call_drop
   node @class.member_attrs
   node @class.member_store
-  node @class.annotated
   node @class.members
   node @class.super_scope
   node @class.super_call_scope
@@ -1558,27 +1553,6 @@ inherit .type_param_scope
   edge @class.members -> members_super
   edge members_super -> @class.super_scope
 
-  ; An annotated declaration in the class chain wins over every other declaration of the member.
-  ; The annotated declarations of a class hang on the node `annotated`: an annotation in the class
-  ; body (`x: T`, `x: T = v`) and an annotated store of a method (`self.x: T = v`). A lookup of a
-  ; member enters the node from the members of the class, with a precedence above the class body.
-  ; From there it walks the chain of the base classes through the marker "<ann>". A base pops the
-  ; marker at its members and enters its own node `annotated`. The marker keeps the walk off the
-  ; plain declarations of the base. The class itself wins over its bases (precedence 1 against 0).
-  node ann_pop
-  node ann_marker
-  attr (ann_pop) pop_symbol = "<ann>"
-  attr (ann_marker) push_symbol = "<ann>"
-  edge @class.members -> @class.annotated
-  attr (@class.members -> @class.annotated) precedence = 3
-  edge @class.members -> ann_pop
-  ; A walk with the marker must pass the node `annotated` of every class. The edge to the members
-  ; of the bases has the precedence 0, so the walk cannot skip a class.
-  attr (@class.members -> ann_pop) precedence = 1
-  edge ann_pop -> @class.annotated
-  edge @class.annotated -> ann_marker
-  edge ann_marker -> members_super
-
   ; The self scope reaches the base classes only for a lookup of a member. The lookup has the "."
   ; symbol on the symbol stack. A reference to a variable that holds an instance has no "." symbol,
   ; so it does not resolve to a base class.
@@ -1619,18 +1593,6 @@ inherit .type_param_scope
   edge @body.class_parent_scope -> @class.local_scope
   let @body.class_self_scope = @class.call_drop
   let @body.class_super_scope = @class.super_call_scope
-}
-
-; An annotation in the class body declares a member: `x: T` and `x: T = v`.
-(class_definition
-  body: (block
-    (expression_statement
-      (assignment
-        left: (identifier) @pattern
-        type: (type))))) @class
-{
-  edge @class.annotated -> @pattern.input
-  attr (@class.annotated -> @pattern.input) precedence = 1
 }
 
 (class_definition
@@ -2429,21 +2391,6 @@ inherit .type_param_scope
   attr (@name.output) is_reference
   ; The stitcher keeps one more similar path for this reference. See `add_path_shadow_aware`.
   attr (@name.output) syntax_type = "store"
-}
-
-; An annotated store of a method, `self.name: T = value`, declares a member of the class. The
-; method gives its body the node `annotated` of the class. An annotation on another object is no
-; declaration of the class. The rule reads the name `self` or `cls` for the object, because a
-; condition cannot read the name of the first parameter, which the graph holds in a scoped variable.
-(assignment
-  left: (attribute
-    object: (identifier) @object
-    attribute: (identifier) @name)
-  type: (type)
-  (#match? @object "^(self|cls)$"))
-{
-  edge @object.method_ann_scope -> @name.input
-  attr (@object.method_ann_scope -> @name.input) precedence = 1
 }
 
 ; A store through a name, `self.name = value`, has a second entry for the member attributes of the

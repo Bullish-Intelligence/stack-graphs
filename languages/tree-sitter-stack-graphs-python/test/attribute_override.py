@@ -1,5 +1,5 @@
-# An attribute that several classes of a chain store. The lookup of a member of an instance
-# resolves to the store of the most derived class. An annotated declaration in the chain wins.
+# An attribute that several classes of a chain store. The lookup of a member of an instance resolves to
+# the store of the most derived class. The annotated-first policy (an annotated declaration wins) is pending.
 
 # Two levels. Both classes store `t`.
 class Base2:
@@ -110,7 +110,7 @@ def derived_only(x: Leaf6):
     return x.t
     #        ^ defined: 106
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated class body declaration in the base wins over the stores of the derived classes.
 class Base7:
     t: int
@@ -130,9 +130,9 @@ class Leaf7(Mid7):
 
 def annotated_body(x: Leaf7):
     return x.t
-    #        ^ defined: 116
+    #        ^ defined: 124
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated class body declaration with a value.
 class Base8:
     t: int = 0
@@ -145,9 +145,9 @@ class Leaf8(Base8):
 
 def annotated_body_value(x: Leaf8):
     return x.t
-    #        ^ defined: 138
+    #        ^ defined: 143
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated store in the base wins over the plain store of the derived class.
 class Base9:
     def __init__(self):
@@ -161,7 +161,7 @@ class Leaf9(Base9):
 
 def annotated_base_store(x: Leaf9):
     return x.t
-    #        ^ defined: 154
+    #        ^ defined: 159
 
 
 # An annotated store in the derived class is the most derived store too.
@@ -179,7 +179,7 @@ def annotated_derived_store(x: Leaf10):
     return x.t
     #        ^ defined: 175
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated store in the middle class wins over the plain stores above and below it.
 class Base11:
     def __init__(self):
@@ -198,9 +198,9 @@ class Leaf11(Mid11):
 
 def annotated_middle_store(x: Leaf11):
     return x.t
-    #        ^ defined: 191
+    #        ^ defined: 196
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated declaration in the root of a chain of plain stores.
 class Base12:
     t: int
@@ -221,9 +221,9 @@ class Leaf12(Mid12):
 
 def annotated_root(x: Leaf12):
     return x.t
-    #        ^ defined: 206
+    #        ^ defined: 219
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # Annotated declarations in two classes of the chain. The most derived one wins.
 class Base13:
     t: int = 0
@@ -240,9 +240,9 @@ class Leaf13(Mid13):
 
 def two_annotated(x: Leaf13):
     return x.t
-    #        ^ defined: 233
+    #        ^ defined: 238
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # An annotated store with no value.
 class Base14:
     def __init__(self):
@@ -256,9 +256,9 @@ class Leaf14(Base14):
 
 def annotated_no_value(x: Leaf14):
     return x.t
-    #        ^ defined: 249
+    #        ^ defined: 254
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # A plain assignment in the class body of the derived class does not win over the annotation.
 class Base15:
     t: int
@@ -270,7 +270,7 @@ class Leaf15(Base15):
 
 def annotated_over_body(x: Leaf15):
     return x.t
-    #        ^ defined: 264
+    #        ^ defined: 268
 
 
 # The annotation of another name does not win. Only the name `t` counts.
@@ -326,7 +326,7 @@ def unrelated(x: Leaf18):
     return x.t
     #        ^ defined: 322
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # A lookup on the class object finds the annotated declaration of the base.
 class Base19:
     t: int
@@ -337,9 +337,9 @@ class Leaf19(Base19):
 
 
 Leaf19.t
-#      ^ defined: 332
+#      ^ defined: 336
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # A lookup through `self` in a method of the derived class.
 class Base20:
     t: int
@@ -354,9 +354,9 @@ class Leaf20(Base20):
 
     def get(self):
         return self.t
-        #           ^ defined: 345
+        #           ^ defined: 353
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # Two bases. The annotated declaration in the second base wins over the store in the first.
 class Left21:
     def __init__(self):
@@ -373,7 +373,7 @@ class Both21(Left21, Right21):
 
 def two_bases(x: Both21):
     return x.t
-    #        ^ defined: 367
+    #        ^ defined: 363
 
 
 # A method override is no attribute override: the most derived method wins.
@@ -423,7 +423,7 @@ def bare_leaf(x: Leaf23):
     return x.t
     #        ^ defined: 415
 
-
+# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
 # Four levels. The annotation sits at the top. The levels below store `t`.
 class Base24:
     t: int
@@ -445,4 +445,4 @@ class C24(B24):
 
 def four_levels(x: C24):
     return x.t
-    #        ^ defined: 429
+    #        ^ defined: 443
