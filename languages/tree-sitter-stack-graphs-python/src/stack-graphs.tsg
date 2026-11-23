@@ -3037,7 +3037,19 @@ inherit .type_param_scope
   edge @sub.annot -> @argument.annot
 }
 
-;; a union type, like typing.Union[Foo, Bar]: follow every argument
+;; a union type, like typing.Union[Foo, Bar]: follow every argument. The node has the syntax type
+;; "union". A path that passes it follows a union that the code declares. Scippy reads the syntax
+;; type, and it emits every member of such a union up to a higher cap.
+(subscript
+  value: [
+    (identifier) @_head
+    (attribute attribute: (identifier) @_head)
+  ]
+  (#eq? @_head "Union")) @sub
+{
+  attr (@sub.annot) syntax_type = "union"
+}
+
 (subscript
   value: [
     (identifier) @_head
@@ -3134,6 +3146,10 @@ inherit .type_param_scope
     (#match? @content "^\\s*(?:(?:Optional|Union)\\[\\s*)*\\w+(?:\\s*[|,]\\s*\\w+)*\\s*\\]*\\s*$")
     (#not-match? @content "^\\s*\\w+\\s*$"))) @type
 {
+  ; The node holds the names. It has the syntax type "union" (see "a union type" above).
+  node members
+  attr (members) syntax_type = "union"
+  edge @type.annot -> members
   scan (source-text @content) {
     "([A-Za-z_][A-Za-z0-9_]*)"
     {
@@ -3147,7 +3163,7 @@ inherit .type_param_scope
         edge reference -> @content.annotation_exit
         attr (reference -> @content.annotation_exit) precedence = 3
         edge reference -> @content.bottom
-        edge @type.annot -> reference
+        edge members -> reference
       }
     }
   }
@@ -3164,6 +3180,14 @@ inherit .type_param_scope
 }
 
 ;; a union type, like Union[Foo, Bar]: follow every type argument
+(type
+  (generic_type
+    . (identifier) @_head
+    (#eq? @_head "Union"))) @type
+{
+  attr (@type.annot) syntax_type = "union"
+}
+
 (type
   (generic_type
     . (identifier) @_head
@@ -3196,6 +3220,7 @@ inherit .type_param_scope
 (binary_operator operator: "|") @union
 {
   node @union.annot
+  attr (@union.annot) syntax_type = "union"
 }
 
 (type (binary_operator operator: "|") @union) @type
@@ -3235,6 +3260,11 @@ inherit .type_param_scope
 }
 
 ;; a union that the parser reads as a union type, like list[Foo] | None
+(type (union_type)) @type
+{
+  attr (@type.annot) syntax_type = "union"
+}
+
 (type (union_type (type) @member)) @type
 {
   edge @type.annot -> @member.annot

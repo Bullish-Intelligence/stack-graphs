@@ -429,7 +429,7 @@ static PUSH_SCOPED_SYMBOL_ATTRS: Lazy<HashSet<&'static str>> =
 static PUSH_SYMBOL_ATTRS: Lazy<HashSet<&'static str>> =
     Lazy::new(|| HashSet::from([TYPE_ATTR, SYMBOL_ATTR, IS_REFERENCE_ATTR, SYNTAX_TYPE_ATTR]));
 static SCOPE_ATTRS: Lazy<HashSet<&'static str>> =
-    Lazy::new(|| HashSet::from([TYPE_ATTR, IS_EXPORTED_ATTR, IS_ENDPOINT_ATTR]));
+    Lazy::new(|| HashSet::from([TYPE_ATTR, IS_EXPORTED_ATTR, IS_ENDPOINT_ATTR, SYNTAX_TYPE_ATTR]));
 
 // Edge attribute names
 static PRECEDENCE_ATTR: &'static str = "precedence";
