@@ -1,7 +1,7 @@
-# The base class `object` comes after all other bases at every level, as in the C3 order.
+# The rules return the candidates of all bases and `object`. Scippy picks one by the C3 order.
 
 # The shape of `argparse.ArgumentParser`: the first base has no `__init__`, the second base has one.
-# Both bases name `object`. The first base must not reach `object.__init__` before the second base.
+# Both bases name `object`. The candidates include `Container.__init__`.
 class Holder(object):
     pass
 

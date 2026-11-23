@@ -1672,10 +1672,9 @@ inherit .type_param_scope
   attr (@class.members -> @class.member_attrs) precedence = 1
 
   ; Every class derives from `object`. The search reaches it only if neither the members nor a
-  ; base class has the member: the edge has the precedence 0, below the base classes (1). The self
-  ; scope is the entry of the instance and of `self`. A base class is entered through the members
-  ; of the class, so a base adds no `object` of its own. The edge follows the pop of the "."
-  ; symbol, so only a lookup of a member reaches it.
+  ; base class has the member: the edge has the precedence 0, below the base classes (1). This
+  ; is no order between the bases: `object` is the last class of every C3 order. A base class is
+  ; entered through the members of the class, so a base adds no `object` of its own.
   attr (self_super -> members_super) precedence = 1
   node object_dot
   attr (object_dot) push_symbol = "."
@@ -1715,79 +1714,24 @@ inherit .type_param_scope
   attr (@class.members -> @last_stmt.after_scope) precedence = 2
 }
 
-; The base class `object` is no edge of the super scope. Python searches it after all other bases,
-; at every level (as in the C3 order, where `object` is last). An edge from the base `A` to
-; `object` would win over a later base `C` of the class `D(A, C)`, because the path through `A`
-; has the higher precedence. Every class reaches `object` from its self scope instead, with a
-; precedence below its members and its base classes (see the class rule). A lookup that enters
-; the class as a base does not pass the self scope, so a base adds no `object` of its own.
+; The rules return the members of all base classes. They do not order the bases: the order of
+; the bases is the C3 linearization of Python, and the reconciler of Scippy applies it with the
+; knowledge of the whole program. The own members of a class still shadow its bases (see the
+; class rule).
 (class_definition
   superclasses: (argument_list
-    (expression) @superclass
-    (#not-eq? @superclass "object"))) @class
+    (expression) @superclass)) @class
 {
   edge @class.super_scope -> @superclass.output
   edge @class.super_call_scope -> @superclass.output
 }
 
-; A base class that stands earlier in the list wins over a later one. A member of the first base
-; shadows a member of the second base. A member that only a later base has still resolves.
-; This is a left-to-right, depth-first search of the bases. It is not the C3 linearization of
-; Python. In a diamond it can differ from Python: for `class D(B, C)` with `B(A)` and `C(A)`, the
-; search reaches `A` through `B` before it reaches `C`, so a member that `A` and `C` both define
-; resolves to `A`, and Python reads `C` first. The first, second, and third base get the
-; precedences 3, 2, and 1. A base that stands later than the third keeps the precedence 0.
-(class_definition
-  superclasses: (argument_list . (expression) @superclass (#not-eq? @superclass "object"))) @class
-{
-  attr (@class.super_scope -> @superclass.output) precedence = 3
-  attr (@class.super_call_scope -> @superclass.output) precedence = 3
-}
-
-(class_definition
-  superclasses: (argument_list . (expression) . (expression) @superclass
-    (#not-eq? @superclass "object"))) @class
-{
-  attr (@class.super_scope -> @superclass.output) precedence = 2
-  attr (@class.super_call_scope -> @superclass.output) precedence = 2
-}
-
-(class_definition
-  superclasses: (argument_list . (expression) . (expression) . (expression) @superclass
-    (#not-eq? @superclass "object"))) @class
-{
-  attr (@class.super_scope -> @superclass.output) precedence = 1
-  attr (@class.super_call_scope -> @superclass.output) precedence = 1
-}
-
 ; A call of `super()` follows a generic base class, `class B(A[T])`, as the keyword paths do. The
-; base `A[T]` is the class `A`. The edge has the precedence of the position of the base, so the
-; bases keep their order. A lookup of a member does not follow it: the work of the lookups would
-; grow. The call of `super()` is rare, so its scope can afford it.
-(class_definition
-  superclasses: (argument_list . (subscript value: (_) @value))) @class
-{
-  edge @class.super_call_scope -> @value.output
-  attr (@class.super_call_scope -> @value.output) precedence = 3
-}
-
-(class_definition
-  superclasses: (argument_list . (expression) . (subscript value: (_) @value))) @class
-{
-  edge @class.super_call_scope -> @value.output
-  attr (@class.super_call_scope -> @value.output) precedence = 2
-}
-
-(class_definition
-  superclasses: (argument_list . (expression) . (expression) . (subscript value: (_) @value))) @class
-{
-  edge @class.super_call_scope -> @value.output
-  attr (@class.super_call_scope -> @value.output) precedence = 1
-}
-
+; base `A[T]` is the class `A`. A lookup of a member does not follow it: the work of the lookups
+; would grow. The call of `super()` is rare, so its scope can afford it.
 (class_definition
   superclasses: (argument_list
-    (expression) . (expression) . (expression) . (subscript value: (_) @value))) @class
+    (subscript value: (_) @value))) @class
 {
   edge @class.super_call_scope -> @value.output
 }

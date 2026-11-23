@@ -26,16 +26,16 @@ class C:
 class D(B, C):
     def go(self):
         self.run()
-        #    ^ defined: 14
+        #    ^ defined: 14, 22
         super().run()
-        #       ^ defined: 14
+        #       ^ defined: 14, 22
         super().__init__()
-        #       ^ defined: 10
+        #       ^ defined: 10, 19
 
 
 def f(d: D):
     d.run()
-    #  ^ defined: 14
+    #  ^ defined: 14, 22
 
 
 # A member that only the second base has still resolves to the second base.
@@ -52,8 +52,8 @@ class E(B, OnlyC):
         #       ^ defined: 43
 
 
-# The search is depth first, not C3. This differs from Python in a diamond: Python reads `C2`
-# before `A2` and finds `C2.m`, but the search reaches `A2` through `B2` first.
+# The rules return the candidates of all bases. In a diamond, both `A2.m` and `C2.m` are
+# candidates. Scippy picks `C2.m`, because the C3 order of Python reads `C2` before `A2`.
 class A2:
     def m(self):
         pass
@@ -73,4 +73,4 @@ class D2(B2, C2):
 
 
 D2().m
-#    ^ defined: 58
+#    ^ defined: 58, 67

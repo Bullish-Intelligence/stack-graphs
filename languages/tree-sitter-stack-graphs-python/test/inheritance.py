@@ -103,8 +103,8 @@ Bottom.class_attr
 Bottom().instance_attr
 #        ^ defined: 7
 
-# In a diamond, the first base wins over the second base, as Python searches the bases from left to
-# right. The class `LeftOwn` comes first.
+# In a diamond, the rules return the member of each base: `LeftOwn.own` and `RightOwn.own`. The
+# choice between them is the C3 order of Scippy. `LeftOwn` comes first.
 class LeftOwn(A):
     def own(self):
         pass
@@ -117,4 +117,4 @@ class BottomOwn(LeftOwn, RightOwn):
     pass
 
 BottomOwn().own
-#           ^ defined: 109
+#           ^ defined: 109, 113

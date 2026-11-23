@@ -356,8 +356,8 @@ class Leaf20(Base20):
         return self.t
         #           ^ defined: 353
 
-# annotated-first policy: pending (the policy picks an annotated declaration; without it the store wins)
-# Two bases. The annotated declaration in the second base wins over the store in the first.
+# Two bases. The rules return the store of the first base and the annotation of the second base.
+# The choice is the policy of Scippy: the annotated declaration wins.
 class Left21:
     def __init__(self):
         self.t = 0
@@ -373,7 +373,7 @@ class Both21(Left21, Right21):
 
 def two_bases(x: Both21):
     return x.t
-    #        ^ defined: 363
+    #        ^ defined: 363, 367
 
 
 # A method override is no attribute override: the most derived method wins.
