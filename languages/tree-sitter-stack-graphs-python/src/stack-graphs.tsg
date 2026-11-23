@@ -706,6 +706,29 @@ inherit .type_param_scope
   edge @first.def -> @first.ref
 }
 
+;;;; Submodule of a package
+;;
+;; `from .sub import x` in the `__init__.py` of a package sets the attribute `sub` of the package, as
+;; the import system does. The file then reads `sub.y`, and a file that imports the package reads
+;; `pkg.sub.y`. The statement defines the name `sub`, with a lower precedence than the names that
+;; the statement imports, so `from .x import x` keeps the name `x` of the import. The module `sub`
+;; has to exist: the reference of the name resolves to nothing for another name.
+
+(import_from_statement
+  module_name: (relative_import (import_prefix) @_prefix . (dotted_name . (identifier) @first))
+  (#eq? @_prefix ".")) @stmt
+{
+  scan FILE_PATH {
+    "(?:^|/)__init__\\.py$"
+    {
+      node submodule_def
+      attr (submodule_def) node_definition = @first
+      edge submodule_def -> @first.ref
+      edge @stmt.after_scope -> submodule_def
+    }
+  }
+}
+
 ;;;; Wildcard Import
 ;;
 ;; Wildcard imports simply pass through
@@ -3427,15 +3450,32 @@ inherit .type_param_scope
   attr (@sub.value_instance) push_scoped_symbol = "()", scope = @sub.literal_scope
 }
 
-[
-  (subscript
-    value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
-    (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView)$"))
-  (subscript
-    value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
-    . subscript: (_) . subscript: (ellipsis) .
-    (#match? @_head "^(tuple|Tuple)$"))
-] @sub
+; Two stanzas, not one alternation: the predicates of the branches would all apply to one match,
+; and the name could never be a sequence and a tuple at the same time.
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView)$")) @sub
+{
+  node call
+  node drop
+  node elem
+  node val
+  attr (call) pop_scoped_symbol = "()"
+  attr (drop) type = "drop_scopes"
+  attr (elem) pop_symbol = "<elem>"
+  attr (val) pop_symbol = "<val>"
+  edge @sub.annot -> call
+  edge call -> drop
+  edge drop -> elem
+  edge drop -> val
+  edge elem -> @sub.element_instance
+  edge val -> @sub.element_instance
+}
+
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: (_) . subscript: (ellipsis) .
+  (#match? @_head "^(tuple|Tuple)$")) @sub
 {
   node call
   node drop
@@ -3488,6 +3528,47 @@ inherit .type_param_scope
   (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
 {
   edge @sub.element_instance -> @element.annot
+}
+
+;; A string that holds a class name, as the first argument of a container: `list["Foo"]`. The
+;; mapping `dict["Key", Foo]` has the key type here.
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: (string
+    (string_content) @content
+    (#match? @content "^[A-Za-z_][A-Za-z0-9_]*$"))
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  node reference
+  attr (reference) node_reference = @content
+  edge reference -> @content.local_scope
+  attr (reference -> @content.local_scope) precedence = 2
+  edge reference -> @content.class_parent_scope
+  attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.annotation_exit
+  attr (reference -> @content.annotation_exit) precedence = 3
+  edge reference -> @content.bottom
+  edge @sub.element_instance -> reference
+}
+
+;; A string that holds a class name, as the value type of a mapping: `dict[str, "Foo"]`.
+(subscript
+  value: [(identifier) @_head (attribute attribute: (identifier) @_head)]
+  . subscript: (_) . subscript: (string
+    (string_content) @content
+    (#match? @content "^[A-Za-z_][A-Za-z0-9_]*$")) .
+  (#match? @_head "^(dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$")) @sub
+{
+  node reference
+  attr (reference) node_reference = @content
+  edge reference -> @content.local_scope
+  attr (reference -> @content.local_scope) precedence = 2
+  edge reference -> @content.class_parent_scope
+  attr (reference -> @content.class_parent_scope) precedence = 1
+  edge reference -> @content.annotation_exit
+  attr (reference -> @content.annotation_exit) precedence = 3
+  edge reference -> @content.bottom
+  edge @sub.value_instance -> reference
 }
 
 ;; The second argument of a mapping subscript is the value type.
@@ -3904,6 +3985,21 @@ inherit .type_param_scope
   attr (pop) pop_scoped_symbol = "()"
   edge @name.input -> pop
   edge pop -> JUMP_TO_SCOPE_NODE
+}
+
+;; A name that annotates with an alias of a container follows the annotation that the alias holds, as
+;; if the annotation stood in its place. `Graph = dict[str, State]` and `x: Graph` give `x` the element
+;; type of `dict[str, State]`. The alias can come from another file. The route covers the containers
+;; that the annotation rules know. A union alias and a wrapper like `Optional[...]` have their own
+;; route; see "Union aliases". Another subscript, like `registry["key"]`, stays out: a variable,
+;; not a type, would be the head.
+
+(module (expression_statement (assignment
+  left: (identifier) @name
+  right: (subscript value: [(identifier) @_head (attribute attribute: (identifier) @_head)]) @value
+  (#match? @_head "^(list|List|Sequence|MutableSequence|Iterable|Iterator|Collection|Reversible|AbstractSet|Set|MutableSet|set|frozenset|FrozenSet|deque|Deque|Generator|AsyncIterable|AsyncIterator|AsyncGenerator|KeysView|ValuesView|tuple|Tuple|dict|Dict|Mapping|MutableMapping|defaultdict|DefaultDict|OrderedDict|ChainMap)$"))))
+{
+  edge @name.input -> @value.annot
 }
 
 (assignment
